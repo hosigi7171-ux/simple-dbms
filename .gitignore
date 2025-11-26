@@ -1,0 +1,23 @@
+# Object files
+*.o
+
+# Dependecy files for testing
+*.d
+*.build
+bpt/build/vendor/*
+bpt/build/test/mocks/*
+bpt/build/test/runners/*
+*.out
+*.fail
+*.pass
+file_test
+*.db
+library_test
+
+# Executables
+main
+
+# OS / IDE 관련
+.DS_Store
+Thumbs.db
+.vscode/
