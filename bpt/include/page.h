@@ -1,10 +1,8 @@
 #ifndef PAGE_H
 #define PAGE_H
 
-#include <stdint.h>
-
-typedef uint64_t pagenum_t;
-typedef uint64_t magicnum_t;
+#include "common_config.h"
+#include <cstdint>
 
 #define PAGE_SIZE 4096
 #define HEADER_PAGE_RESERVED 4072
