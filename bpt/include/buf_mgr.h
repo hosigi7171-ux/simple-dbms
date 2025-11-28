@@ -6,6 +6,8 @@
 #include <unordered_map>
 
 #define PREFETCH_SIZE 4
+#define INVALID_FRAME -1
+#define INVALID_TABLE_ID -1
 
 /**
  * dto for make_and_pin_page
@@ -56,6 +58,10 @@ void prefetch(int fd, pagenum_t page_num, tableid_t table_id,
               std::unordered_map<pagenum_t, frame_idx_t> &frame_mapper);
 void write_buffer(tableid_t table_id, pagenum_t page_num, page_t *page);
 allocated_page_info_t make_and_pin_page(int fd, tableid_t table_id);
+frame_idx_t get_frame_index_by_page(tableid_t table_id, pagenum_t page_num);
+void clear_frame_and_page_table(tableid_t table_id, pagenum_t page_num,
+                                frame_idx_t frame_idx);
+void free_page_in_buffer(int fd, tableid_t table_id, pagenum_t page_num);
 
 // set pin count
 void pin(tableid_t table_id, pagenum_t page_num);

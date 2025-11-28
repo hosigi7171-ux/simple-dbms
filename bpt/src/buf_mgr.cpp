@@ -184,6 +184,45 @@ allocated_page_info_t make_and_pin_page(int fd, tableid_t table_id) {
   return {frame_ptr, page_num};
 }
 
+frame_idx_t get_frame_index_by_page(tableid_t table_id, pagenum_t page_num) {
+  auto &page_map = buf_mgr.page_table[table_id];
+  auto it = page_map.find(page_num);
+
+  if (it == page_map.end()) {
+    return INVALID_FRAME;
+  }
+  return it->second;
+}
+
+/**
+ * helper function for free_page_in_buffer
+ * remove frame in buffer and mapper
+ */
+void clear_frame_and_page_table(tableid_t table_id, pagenum_t page_num,
+                                frame_idx_t frame_idx) {
+  buf_mgr.frames[frame_idx].table_id = INVALID_TABLE_ID;
+  buf_mgr.frames[frame_idx].page_num = PAGE_NULL;
+  buf_mgr.frames[frame_idx].is_dirty = false;
+  buf_mgr.frames[frame_idx].pin_count = 0;
+  buf_mgr.frames[frame_idx].ref_bit = false;
+
+  buf_mgr.page_table[table_id].erase(page_num);
+}
+
+/**
+ * 버퍼 내부의 해당하는 프레임을 제거하고 디스크 상에서 free까지 함
+ * 호출시 추가로 unpin할 필요는 없음
+ */
+void free_page_in_buffer(int fd, tableid_t table_id, pagenum_t page_num) {
+  frame_idx_t frame_idx = get_frame_index_by_page(table_id, page_num);
+
+  if (frame_idx != INVALID_FRAME) {
+    clear_frame_and_page_table(table_id, page_num, frame_idx);
+  }
+
+  file_free_page(fd, page_num);
+}
+
 /**
  * clock alogorithm---------------------------------------------------
  */
