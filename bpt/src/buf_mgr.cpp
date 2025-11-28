@@ -36,6 +36,10 @@ void flush_frame(int fd, tableid_t table_id, frame_idx_t frame_idx) {
  * read/write buffer-----------------------------------------------------
  */
 
+/**
+ * helper function for read_buffer
+ * @brief Get the page from buffer object
+ */
 page_t *
 get_page_from_buffer(pagenum_t page_num,
                      std::unordered_map<pagenum_t, frame_idx_t> &frame_mapper) {
@@ -47,6 +51,9 @@ get_page_from_buffer(pagenum_t page_num,
   return (page_t *)bcb->frame;
 }
 
+/**
+ * 버퍼에서 페이지를 읽기
+ */
 page_t *read_buffer(int fd, tableid_t table_id, pagenum_t page_num) {
   std::unordered_map<pagenum_t, frame_idx_t> &frame_mapper =
       buf_mgr.page_table[table_id];
@@ -64,6 +71,9 @@ page_t *read_buffer(int fd, tableid_t table_id, pagenum_t page_num) {
   return (page_t *)buf_mgr.frames[frame_idx].frame;
 }
 
+/**
+ * 버퍼에 페이지를 작성한다
+ */
 void write_buffer(tableid_t table_id, pagenum_t page_num, page_t *page) {
   frame_idx_t frame_idx = buf_mgr.page_table[table_id][page_num];
   buf_ctl_block_t *bcb = &buf_mgr.frames[frame_idx];
@@ -111,6 +121,9 @@ void prefetch(int fd, pagenum_t page_num, tableid_t table_id,
   }
 }
 
+/**
+ * @brief Set the new bcb object
+ */
 void set_new_bcb(tableid_t table_id, pagenum_t page_num, frame_idx_t frame_idx,
                  page_t *page_buf) {
   buf_mgr.frames[frame_idx].frame = page_buf;
@@ -121,6 +134,9 @@ void set_new_bcb(tableid_t table_id, pagenum_t page_num, frame_idx_t frame_idx,
   buf_mgr.frames[frame_idx].ref_bit = true;
 }
 
+/**
+ * @brief Set the new prefetched bcb object
+ */
 void set_new_prefetched_bcb(tableid_t table_id, pagenum_t page_num,
                             frame_idx_t frame_idx, page_t *page_buf) {
   buf_mgr.frames[frame_idx].frame = page_buf;
@@ -131,6 +147,9 @@ void set_new_prefetched_bcb(tableid_t table_id, pagenum_t page_num,
   buf_mgr.frames[frame_idx].ref_bit = true;
 }
 
+/**
+ * 디스크에서 페이지를 읽어서 버퍼에 올림
+ */
 frame_idx_t load_page_into_buffer(int fd, tableid_t table_id,
                                   pagenum_t page_num) {
   frame_idx_t frame_idx = find_free_frame_index(fd, table_id, page_num);
@@ -145,6 +164,10 @@ frame_idx_t load_page_into_buffer(int fd, tableid_t table_id,
   return frame_idx;
 }
 
+/**
+ * 디스크에 페이지를 할당하고 버퍼에 올림
+ * @return allocated_page_info_t = {page_t*, pagenum_t}
+ */
 allocated_page_info_t make_and_pin_page(int fd, tableid_t table_id) {
   pagenum_t page_num = file_alloc_page(fd);
   if (page_num == PAGE_NULL) {
