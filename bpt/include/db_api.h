@@ -20,11 +20,11 @@ extern table_info_t table_infos[MAX_TABLE_COUNT + 1];
 std::unordered_map<std::string, tableid_t> path_table_mapper;
 
 int init_db(int buf_num);
-int open_table(char *pathname);
-int db_insert(int table_id, int64_t key, char *value);
-int db_find(int table_id, int64_t key, char *ret_val);
-int db_delete(int table_id, int64_t key);
-int close_table(int table_id);
+int open_table(tableid_t table_id, char *pathname);
+int db_insert(tableid_t table_id, int64_t key, char *value);
+int db_find(tableid_t table_id, int64_t key, char *ret_val);
+int db_delete(tableid_t table_id, int64_t key);
+int close_table(tableid_t table_id);
 int shutdown_db(void);
 void db_print_tree(tableid_t table_id);
 void db_print_leaves(tableid_t table_id);

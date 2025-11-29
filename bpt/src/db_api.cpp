@@ -78,7 +78,7 @@ int find_free_table() {
  * which represents the own table in this database.
  * Otherwise, return negative value
  */
-int open_table(char *pathname) {
+int open_table(tableid_t table_id, char *pathname) {
   if (strlen(pathname) > PATH_NAME_MAX_LENGTH) {
     return FAILURE;
   }
@@ -105,7 +105,7 @@ int open_table(char *pathname) {
     return FAILURE;
   }
   if (stat_buf.st_size == 0) {
-    init_header_page(get_fd(table_id));
+    init_header_page(get_fd(table_id), table_id);
   }
 
   // set table infos and mapper
@@ -204,7 +204,7 @@ void db_print_tree(tableid_t table_id) {
     printf("table not open\n");
     return;
   }
-  print_tree(get_fd(table_id));
+  print_tree(get_fd(table_id), table_id);
 }
 
 void db_print_leaves(tableid_t table_id) {
@@ -212,7 +212,7 @@ void db_print_leaves(tableid_t table_id) {
     printf("table not open\n");
     return;
   }
-  print_leaves(get_fd(table_id));
+  print_leaves(get_fd(table_id), table_id);
 }
 
 int db_find_and_print_range(tableid_t table_id, int64_t key_start,
