@@ -1,23 +1,25 @@
 #include "bpt.h"
 #include "bpt_internal.h"
+#include "buf_mgr.h"
+#include "file.h"
 
 // INSERTION
 
-void copy_value(char *dest, const char *src, size_t size) {
+void copy_value(char* dest, const char* src, size_t size) {
   strncpy(dest, src, size - 1);
   dest[size - 1] = '\0';
 }
 
-void init_leaf_page(page_t *page) {
-  leaf_page_t *leaf_page = (leaf_page_t *)page;
+void init_leaf_page(page_t* page) {
+  leaf_page_t* leaf_page = (leaf_page_t*)page;
   leaf_page->parent_page_num = PAGE_NULL;
   leaf_page->is_leaf = LEAF;
   leaf_page->num_of_keys = 0;
   leaf_page->right_sibling_page_num = PAGE_NULL;
 }
 
-void init_internal_page(page_t *page) {
-  internal_page_t *internal_page = (internal_page_t *)page;
+void init_internal_page(page_t* page) {
+  internal_page_t* internal_page = (internal_page_t*)page;
   internal_page->parent_page_num = PAGE_NULL;
   internal_page->is_leaf = INTERNAL;
   internal_page->num_of_keys = 0;
@@ -30,7 +32,7 @@ void init_internal_page(page_t *page) {
 pagenum_t make_node(int fd, tableid_t table_id, uint32_t isleaf) {
   allocated_page_info_t page_info = make_and_pin_page(fd, table_id);
 
-  page_t *page = page_info.page_ptr;
+  page_t* page = page_info.page_ptr;
   pagenum_t new_page_num = page_info.page_num;
 
   if (page == NULL) {
@@ -40,17 +42,17 @@ pagenum_t make_node(int fd, tableid_t table_id, uint32_t isleaf) {
   memset(page, 0, PAGE_SIZE);
 
   switch (isleaf) {
-  case LEAF:
-    init_leaf_page(page);
-    break;
-  case INTERNAL:
-    init_internal_page(page);
-    break;
-  default:
-    perror("make_node");
-    unpin(table_id, new_page_num);
-    exit(EXIT_FAILURE);
-    break;
+    case LEAF:
+      init_leaf_page(page);
+      break;
+    case INTERNAL:
+      init_internal_page(page);
+      break;
+    default:
+      perror("make_node");
+      unpin(table_id, new_page_num);
+      exit(EXIT_FAILURE);
+      break;
   }
 
   write_buffer(table_id, new_page_num, page);
@@ -62,8 +64,8 @@ pagenum_t make_node(int fd, tableid_t table_id, uint32_t isleaf) {
  * where the new key should be inserted, based on the position
  * of the left child node (left_num).
  */
-int get_index_after_left_child(page_t *parent_buffer, pagenum_t left_num) {
-  internal_page_t *parent = (internal_page_t *)parent_buffer;
+int get_index_after_left_child(page_t* parent_buffer, pagenum_t left_num) {
+  internal_page_t* parent = (internal_page_t*)parent_buffer;
   // left_num이 leftmost인 경우 entries[0]
   if (parent->one_more_page_num == left_num) {
     return 0;
@@ -86,7 +88,7 @@ int get_index_after_left_child(page_t *parent_buffer, pagenum_t left_num) {
  * key into a leaf.
  */
 int insert_into_leaf(int fd, tableid_t table_id, pagenum_t leaf_num,
-                     leaf_page_t *leaf_page, int64_t key, char *value) {
+                     leaf_page_t* leaf_page, int64_t key, char* value) {
   int index, insertion_point;
 
   insertion_point = 0;
@@ -102,7 +104,7 @@ int insert_into_leaf(int fd, tableid_t table_id, pagenum_t leaf_num,
   copy_value(leaf_page->records[insertion_point].value, value, VALUE_SIZE);
   leaf_page->num_of_keys++;
 
-  write_buffer(table_id, leaf_num, (page_t *)leaf_page);
+  write_buffer(table_id, leaf_num, (page_t*)leaf_page);
   unpin(table_id, leaf_num);
   return SUCCESS;
 }
@@ -112,10 +114,9 @@ int insert_into_leaf(int fd, tableid_t table_id, pagenum_t leaf_num,
  * Create a temporary array by combining the existing record and the new record
  * and return it
  */
-record_t *prepare_records_for_split(leaf_page_t *leaf_page, int64_t key,
-                                    const char *value) {
-
-  record_t *temp_records = (record_t *)malloc(RECORD_CNT * sizeof(record_t));
+record_t* prepare_records_for_split(leaf_page_t* leaf_page, int64_t key,
+                                    const char* value) {
+  record_t* temp_records = (record_t*)malloc(RECORD_CNT * sizeof(record_t));
   if (temp_records == NULL) {
     perror("Memory allocation for temporary records failed.");
     exit(EXIT_FAILURE);
@@ -147,11 +148,10 @@ record_t *prepare_records_for_split(leaf_page_t *leaf_page, int64_t key,
  * Distributes records in the temporary array to old_leaf and new_leaf and
  * returns k_prime
  */
-int64_t distribute_records_to_leaves(leaf_page_t *leaf_page,
-                                     leaf_page_t *new_leaf_page,
-                                     record_t *temp_records,
+int64_t distribute_records_to_leaves(leaf_page_t* leaf_page,
+                                     leaf_page_t* new_leaf_page,
+                                     record_t* temp_records,
                                      pagenum_t new_leaf_num) {
-
   const int split = cut(RECORD_CNT);
 
   int i, j;
@@ -190,26 +190,26 @@ int64_t distribute_records_to_leaves(leaf_page_t *leaf_page,
  */
 int insert_into_leaf_after_splitting(int fd, tableid_t table_id,
                                      pagenum_t leaf_num, int64_t key,
-                                     char *value) {
+                                     char* value) {
   pagenum_t new_leaf_num;
   int64_t new_key;
-  record_t *temp_records;
+  record_t* temp_records;
 
-  leaf_page_t *leaf_page = (leaf_page_t *)read_buffer(fd, table_id, leaf_num);
+  leaf_page_t* leaf_page = (leaf_page_t*)read_buffer(fd, table_id, leaf_num);
 
   temp_records = prepare_records_for_split(leaf_page, key, value);
 
   new_leaf_num = make_node(fd, table_id, LEAF);
-  leaf_page_t *new_leaf_page =
-      (leaf_page_t *)read_buffer(fd, table_id, new_leaf_num);
+  leaf_page_t* new_leaf_page =
+      (leaf_page_t*)read_buffer(fd, table_id, new_leaf_num);
 
   new_key = distribute_records_to_leaves(leaf_page, new_leaf_page, temp_records,
                                          new_leaf_num);
 
   free(temp_records);
 
-  write_buffer(table_id, leaf_num, (page_t *)leaf_page);
-  write_buffer(table_id, new_leaf_num, (page_t *)new_leaf_page);
+  write_buffer(table_id, leaf_num, (page_t*)leaf_page);
+  write_buffer(table_id, new_leaf_num, (page_t*)new_leaf_page);
   unpin(table_id, leaf_num);
   unpin(table_id, new_leaf_num);
 
@@ -223,8 +223,7 @@ int insert_into_leaf_after_splitting(int fd, tableid_t table_id,
 int insert_into_node(int fd, tableid_t table_id, pagenum_t page_num,
                      int64_t left_index, int64_t key, pagenum_t right) {
   int index;
-  internal_page_t *page =
-      (internal_page_t *)read_buffer(fd, table_id, page_num);
+  internal_page_t* page = (internal_page_t*)read_buffer(fd, table_id, page_num);
 
   for (index = page->num_of_keys; index > left_index; index--) {
     page->entries[index] = page->entries[index - 1];
@@ -233,7 +232,7 @@ int insert_into_node(int fd, tableid_t table_id, pagenum_t page_num,
   page->entries[left_index].key = key;
   page->num_of_keys++;
 
-  write_buffer(table_id, page_num, (page_t *)page);
+  write_buffer(table_id, page_num, (page_t*)page);
   unpin(table_id, page_num);
 
   return SUCCESS;
@@ -244,11 +243,10 @@ int insert_into_node(int fd, tableid_t table_id, pagenum_t page_num,
  * Returns a temporary array created by combining the existing entries and the
  * new entries
  */
-entry_t *prepare_entries_for_split(internal_page_t *old_node_page,
+entry_t* prepare_entries_for_split(internal_page_t* old_node_page,
                                    int64_t left_index, int64_t key,
                                    pagenum_t right) {
-
-  entry_t *temp_entries = (entry_t *)malloc((ENTRY_CNT) * sizeof(entry_t));
+  entry_t* temp_entries = (entry_t*)malloc((ENTRY_CNT) * sizeof(entry_t));
   if (temp_entries == NULL) {
     perror("Temporary entries array.");
     exit(EXIT_FAILURE);
@@ -275,11 +273,10 @@ entry_t *prepare_entries_for_split(internal_page_t *old_node_page,
  */
 int64_t distribute_entries_and_update_children(int fd, tableid_t table_id,
                                                pagenum_t old_node_num,
-                                               internal_page_t *old_node_page,
+                                               internal_page_t* old_node_page,
                                                pagenum_t new_node_num,
-                                               internal_page_t *new_node_page,
-                                               entry_t *temp_entries) {
-
+                                               internal_page_t* new_node_page,
+                                               entry_t* temp_entries) {
   const int split = cut(INTERNAL_ORDER);
   int i, j;
 
@@ -315,8 +312,8 @@ int64_t distribute_entries_and_update_children(int fd, tableid_t table_id,
   // Update the parent of a child node
   pagenum_t child = new_node_page->one_more_page_num;
   if (child != PAGE_NULL) {
-    page_t *child_page = read_buffer(fd, table_id, child);
-    page_header_t *child_page_header = (page_header_t *)child_page;
+    page_t* child_page = read_buffer(fd, table_id, child);
+    page_header_t* child_page_header = (page_header_t*)child_page;
     child_page_header->parent_page_num = new_node_num;
     write_buffer(table_id, child, child_page);
     unpin(table_id, child);
@@ -324,8 +321,8 @@ int64_t distribute_entries_and_update_children(int fd, tableid_t table_id,
   for (i = 0; i < new_node_page->num_of_keys; i++) {
     child = new_node_page->entries[i].page_num;
     if (child != PAGE_NULL) {
-      page_t *child_page = read_buffer(fd, table_id, child);
-      page_header_t *child_page_header = (page_header_t *)&child_page;
+      page_t* child_page = read_buffer(fd, table_id, child);
+      page_header_t* child_page_header = (page_header_t*)&child_page;
       child_page_header->parent_page_num = new_node_num;
       write_buffer(table_id, child, child_page);
       unpin(table_id, child);
@@ -342,20 +339,19 @@ int64_t distribute_entries_and_update_children(int fd, tableid_t table_id,
 int insert_into_node_after_splitting(int fd, tableid_t table_id,
                                      pagenum_t old_node, int64_t left_index,
                                      int64_t key, pagenum_t right) {
-
   pagenum_t new_node_num;
   int64_t k_prime;
-  entry_t *temp_entries;
+  entry_t* temp_entries;
 
-  internal_page_t *old_node_page =
-      (internal_page_t *)read_buffer(fd, table_id, old_node);
+  internal_page_t* old_node_page =
+      (internal_page_t*)read_buffer(fd, table_id, old_node);
 
   temp_entries =
       prepare_entries_for_split(old_node_page, left_index, key, right);
 
   new_node_num = make_node(fd, table_id, INTERNAL);
-  internal_page_t *new_node_page =
-      (internal_page_t *)read_buffer(fd, table_id, new_node_num);
+  internal_page_t* new_node_page =
+      (internal_page_t*)read_buffer(fd, table_id, new_node_num);
 
   k_prime = distribute_entries_and_update_children(fd, table_id, old_node,
                                                    old_node_page, new_node_num,
@@ -363,8 +359,8 @@ int insert_into_node_after_splitting(int fd, tableid_t table_id,
 
   free(temp_entries);
 
-  write_buffer(table_id, old_node, (page_t *)old_node_page);
-  write_buffer(table_id, new_node_num, (page_t *)new_node_page);
+  write_buffer(table_id, old_node, (page_t*)old_node_page);
+  write_buffer(table_id, new_node_num, (page_t*)new_node_page);
   unpin(table_id, old_node);
   unpin(table_id, new_node_num);
 
@@ -379,8 +375,8 @@ int insert_into_parent(int fd, tableid_t table_id, pagenum_t left, int64_t key,
   int left_index;
   pagenum_t parent;
 
-  page_header_t *left_page_header =
-      (page_header_t *)read_buffer(fd, table_id, left);
+  page_header_t* left_page_header =
+      (page_header_t*)read_buffer(fd, table_id, left);
 
   parent = left_page_header->parent_page_num;
   unpin(table_id, left);
@@ -393,8 +389,8 @@ int insert_into_parent(int fd, tableid_t table_id, pagenum_t left, int64_t key,
   /* Case: leaf or node. (Remainder of
    * function body.)
    */
-  page_t *parent_page = read_buffer(fd, table_id, parent);
-  page_header_t *parent_page_header = (page_header_t *)parent_page;
+  page_t* parent_page = read_buffer(fd, table_id, parent);
+  page_header_t* parent_page_header = (page_header_t*)parent_page;
 
   /* Find the parent's pointer to the left
    * node.
@@ -425,8 +421,8 @@ int insert_into_new_root(int fd, tableid_t table_id, pagenum_t left,
   pagenum_t root = make_node(fd, table_id, INTERNAL);
 
   // root 처리
-  internal_page_t *root_page =
-      (internal_page_t *)read_buffer(fd, table_id, root);
+  internal_page_t* root_page =
+      (internal_page_t*)read_buffer(fd, table_id, root);
 
   root_page->one_more_page_num = left;
   root_page->entries[0].key = key;
@@ -434,26 +430,26 @@ int insert_into_new_root(int fd, tableid_t table_id, pagenum_t left,
   root_page->num_of_keys = 1;
   root_page->parent_page_num = PAGE_NULL;
 
-  write_buffer(table_id, root, (page_t *)root_page);
+  write_buffer(table_id, root, (page_t*)root_page);
   unpin(table_id, root);
 
   // left right 처리
-  page_t *left_page = read_buffer(fd, table_id, left);
-  page_header_t *left_header = (page_header_t *)left_page;
+  page_t* left_page = read_buffer(fd, table_id, left);
+  page_header_t* left_header = (page_header_t*)left_page;
   left_header->parent_page_num = root;
   write_buffer(table_id, left, left_page);
   unpin(table_id, left);
 
-  page_t *right_page = read_buffer(fd, table_id, right);
-  page_header_t *right_header = (page_header_t *)&right_page;
+  page_t* right_page = read_buffer(fd, table_id, right);
+  page_header_t* right_header = (page_header_t*)&right_page;
   right_header->parent_page_num = root;
   write_buffer(table_id, right, right_page);
   unpin(table_id, right);
 
   // 헤더 페이지 갱신
-  header_page_t *header_page = read_header_page(fd, table_id);
+  header_page_t* header_page = read_header_page(fd, table_id);
   header_page->root_page_num = root;
-  write_buffer(table_id, HEADER_PAGE_POS, (page_t *)header_page);
+  write_buffer(table_id, HEADER_PAGE_POS, (page_t*)header_page);
   unpin(table_id, HEADER_PAGE_POS);
 
   return SUCCESS;
@@ -462,10 +458,10 @@ int insert_into_new_root(int fd, tableid_t table_id, pagenum_t left,
 /* First insertion:
  * start a new tree.
  */
-int start_new_tree(int fd, tableid_t table_id, int64_t key, char *value) {
+int start_new_tree(int fd, tableid_t table_id, int64_t key, char* value) {
   // make root page
   pagenum_t root = make_node(fd, table_id, LEAF);
-  leaf_page_t *root_page = (leaf_page_t *)read_buffer(fd, table_id, root);
+  leaf_page_t* root_page = (leaf_page_t*)read_buffer(fd, table_id, root);
 
   root_page->parent_page_num = PAGE_NULL;
   root_page->is_leaf = LEAF;
@@ -476,15 +472,15 @@ int start_new_tree(int fd, tableid_t table_id, int64_t key, char *value) {
 
   link_header_page(fd, table_id, root);
 
-  write_buffer(table_id, root, (page_t *)root_page);
+  write_buffer(table_id, root, (page_t*)root_page);
   unpin(table_id, root);
   return SUCCESS;
 }
 
 void link_header_page(int fd, tableid_t table_id, pagenum_t root) {
-  header_page_t *header_page = (header_page_t *)read_header_page(fd, table_id);
+  header_page_t* header_page = (header_page_t*)read_header_page(fd, table_id);
   header_page->root_page_num = root;
 
-  write_buffer(table_id, HEADER_PAGE_POS, (page_t *)header_page);
+  write_buffer(table_id, HEADER_PAGE_POS, (page_t*)header_page);
   unpin(table_id, HEADER_PAGE_POS);
 }

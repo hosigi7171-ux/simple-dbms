@@ -1,8 +1,10 @@
 #include "db_api.h"
+
 #include "bpt.h"
 #include "buf_mgr.h"
 
 table_info_t table_infos[MAX_TABLE_COUNT + 1] = {0};
+std::unordered_map<std::string, tableid_t> path_table_mapper;
 
 int get_fd(tableid_t table_id) { return table_infos[table_id].fd; }
 
@@ -14,14 +16,14 @@ void free_buffer_manager(int end) {
   for (int index = 0; index < end; index++) {
     free(&buf_mgr.frames[index].frame);
   }
-  free(&buf_mgr.frames);
+  free(buf_mgr.frames);
 }
 
 /**
  * helper function for init_db
  */
 int init_buffer_manager(int buf_num) {
-  buf_mgr.frames = (buf_ctl_block_t *)malloc(buf_num * sizeof(buf_ctl_block_t));
+  buf_mgr.frames = (buf_ctl_block_t*)malloc(buf_num * sizeof(buf_ctl_block_t));
   if (buf_mgr.frames == NULL) {
     return FAILURE;
   }
@@ -78,7 +80,7 @@ int find_free_table() {
  * which represents the own table in this database.
  * Otherwise, return negative value
  */
-int open_table(tableid_t table_id, char *pathname) {
+int open_table(char* pathname) {
   if (strlen(pathname) > PATH_NAME_MAX_LENGTH) {
     return FAILURE;
   }
@@ -123,7 +125,7 @@ int open_table(tableid_t table_id, char *pathname) {
  * If success, return 0
  * Otherwise, return non-zero value
  */
-int db_insert(int table_id, int64_t key, char *value) {
+int db_insert(int table_id, int64_t key, char* value) {
   int result = bpt_insert(get_fd(table_id), table_id, key, value);
   if (result == SUCCESS) {
     return SUCCESS;
@@ -137,7 +139,7 @@ int db_insert(int table_id, int64_t key, char *value) {
  * Otherwise, return non zero value
  * Memory allocation for ret_val should occur in caller
  */
-int db_find(int table_id, int64_t key, char *ret_val) {
+int db_find(int table_id, int64_t key, char* ret_val) {
   if (find(get_fd(table_id), table_id, key, ret_val) == SUCCESS) {
     return SUCCESS;
   }
@@ -224,5 +226,6 @@ int db_find_and_print_range(tableid_t table_id, int64_t key_start,
   if (find_and_print_range(get_fd(table_id), table_id, key_start, key_end) !=
       SUCCESS) {
     return FAILURE;
-  };
+  }
+  return SUCCESS;
 }

@@ -1,7 +1,9 @@
 #include "bpt.h"
 #include "bpt_internal.h"
+#include "buf_mgr.h"
+#include "file.h"
 
-extern queue *q_head;
+extern queue* q_head;
 
 /**
  * helper function for print_leaves
@@ -12,14 +14,14 @@ pagenum_t find_leftmost_leaf_page(int fd, tableid_t table_id,
   pagenum_t current_page_num = start_page_num;
 
   while (true) {
-    page_t *current_buf = read_buffer(fd, table_id, current_page_num);
-    page_header_t *header = (page_header_t *)current_buf;
+    page_t* current_buf = read_buffer(fd, table_id, current_page_num);
+    page_header_t* header = (page_header_t*)current_buf;
 
     if (header->is_leaf == LEAF) {
       return current_page_num;
     }
 
-    internal_page_t *internal_page = (internal_page_t *)current_buf;
+    internal_page_t* internal_page = (internal_page_t*)current_buf;
     pagenum_t next_page_num = internal_page->one_more_page_num;
 
     unpin(table_id, current_page_num);
@@ -43,9 +45,9 @@ void print_leaves_in_sequence(int fd, tableid_t table_id,
   printf("Leaves: ");
 
   do {
-    page_t *current_buf = read_buffer(fd, table_id, current_page_num);
-    leaf_page_t *leaf_page = (leaf_page_t *)current_buf;
-    page_header_t *header = (page_header_t *)current_buf;
+    page_t* current_buf = read_buffer(fd, table_id, current_page_num);
+    leaf_page_t* leaf_page = (leaf_page_t*)current_buf;
+    page_header_t* header = (page_header_t*)current_buf;
 
     for (int i = 0; i < header->num_of_keys; i++) {
       printf("%" PRId64 " ", leaf_page->records[i].key);
@@ -70,7 +72,7 @@ void print_leaves_in_sequence(int fd, tableid_t table_id,
  * of the tree
  */
 void print_leaves(int fd, tableid_t table_id) {
-  header_page_t *header = read_header_page(fd, table_id);
+  header_page_t* header = read_header_page(fd, table_id);
   pagenum_t root_page_num = header->root_page_num;
 
   unpin(table_id, HEADER_PAGE_POS);
@@ -96,7 +98,7 @@ void print_leaves(int fd, tableid_t table_id) {
 int height(int fd, tableid_t table_id, pagenum_t header_page_num) {
   int h = 0;
 
-  header_page_t *header_page = read_header_page(fd, table_id);
+  header_page_t* header_page = read_header_page(fd, table_id);
   pagenum_t current_page_num = header_page->root_page_num;
   unpin(table_id, HEADER_PAGE_POS);
 
@@ -105,14 +107,14 @@ int height(int fd, tableid_t table_id, pagenum_t header_page_num) {
   }
 
   while (1) {
-    page_t *cur_page = read_buffer(fd, table_id, current_page_num);
-    page_header_t *page_header = (page_header_t *)cur_page;
+    page_t* cur_page = read_buffer(fd, table_id, current_page_num);
+    page_header_t* page_header = (page_header_t*)cur_page;
 
     if (page_header->is_leaf == LEAF) {
       break;
     }
 
-    internal_page_t *internal_page = (internal_page_t *)cur_page;
+    internal_page_t* internal_page = (internal_page_t*)cur_page;
     current_page_num = internal_page->one_more_page_num;
     h++;
 
@@ -127,11 +129,11 @@ int height(int fd, tableid_t table_id, pagenum_t header_page_num) {
  * @brief bfs로 b+tree를 level 별로 탐색 및 출력
  */
 void print_tree(int fd, tableid_t table_id) {
-  queue *now_node_ptr = NULL;
+  queue* now_node_ptr = NULL;
   int i = 0;
   int current_level = 0;
 
-  header_page_t *header = read_header_page(fd, table_id);
+  header_page_t* header = read_header_page(fd, table_id);
   pagenum_t root = header->root_page_num;
   unpin(table_id, HEADER_PAGE_POS);
 
@@ -148,8 +150,8 @@ void print_tree(int fd, tableid_t table_id) {
     now_node_ptr = dequeue();
     pagenum_t now_page_num = now_node_ptr->page_num;
 
-    page_t *now_buf = read_buffer(fd, table_id, now_page_num);
-    page_header_t *now_header = (page_header_t *)now_buf;
+    page_t* now_buf = read_buffer(fd, table_id, now_page_num);
+    page_header_t* now_header = (page_header_t*)now_buf;
 
     if (now_node_ptr->level != current_level) {
       current_level = now_node_ptr->level;
@@ -158,14 +160,14 @@ void print_tree(int fd, tableid_t table_id) {
 
     printf("[");
     if (now_header->is_leaf == LEAF) {
-      leaf_page_t *leaf_page = (leaf_page_t *)now_buf;
+      leaf_page_t* leaf_page = (leaf_page_t*)now_buf;
 
       // Leaf Node: 키 출력
       for (i = 0; i < leaf_page->num_of_keys; i++) {
         printf("%" PRId64 " ", leaf_page->records[i].key);
       }
     } else {
-      internal_page_t *internal_page = (internal_page_t *)now_buf;
+      internal_page_t* internal_page = (internal_page_t*)now_buf;
       int next_level = now_node_ptr->level + 1;
 
       // one_more_page_num 삽입
@@ -230,13 +232,13 @@ int find_and_print_range(int fd, tableid_t table_id, int64_t key_start,
            key_start, key_end);
 
     for (i = 0; i < num_found; i++) {
-      leaf_page_t *temp_leaf =
-          (leaf_page_t *)read_buffer(fd, table_id, returned_pages[i]);
+      leaf_page_t* temp_leaf =
+          (leaf_page_t*)read_buffer(fd, table_id, returned_pages[i]);
 
       int64_t key = returned_keys[i];
       int index = returned_indices[i];
 
-      char *value_ptr = temp_leaf->records[index].value;
+      char* value_ptr = temp_leaf->records[index].value;
 
       printf("Key: %" PRId64 "  Location: page %" PRId64
              ", index %d  Value: %s\n",
@@ -255,7 +257,6 @@ int find_and_print_range(int fd, tableid_t table_id, int64_t key_start,
 int find_range(int fd, tableid_t table_id, int64_t key_start, int64_t key_end,
                int64_t returned_keys[], pagenum_t returned_pages[],
                int returned_indices[]) {
-
   int i = 0;
   int num_found = 0;
 
@@ -266,8 +267,8 @@ int find_range(int fd, tableid_t table_id, int64_t key_start, int64_t key_end,
     return 0;
   }
 
-  page_t *current_buf = read_buffer(fd, table_id, current_leaf_num);
-  leaf_page_t *leaf_page = (leaf_page_t *)current_buf;
+  page_t* current_buf = read_buffer(fd, table_id, current_leaf_num);
+  leaf_page_t* leaf_page = (leaf_page_t*)current_buf;
 
   for (i = 0; i < leaf_page->num_of_keys; i++) {
     if (leaf_page->records[i].key >= key_start) {
@@ -298,7 +299,7 @@ int find_range(int fd, tableid_t table_id, int64_t key_start, int64_t key_end,
 
     if (current_leaf_num != PAGE_NULL) {
       current_buf = read_buffer(fd, table_id, current_leaf_num);
-      leaf_page = (leaf_page_t *)current_buf;
+      leaf_page = (leaf_page_t*)current_buf;
     }
   }
 
@@ -313,15 +314,15 @@ int find_range(int fd, tableid_t table_id, int64_t key_start, int64_t key_end,
  * should be, regardless of whether the key exists.
  */
 pagenum_t find_leaf(int fd, tableid_t table_id, int64_t key) {
-  header_page_t *header_page = read_header_page(fd, table_id);
+  header_page_t* header_page = read_header_page(fd, table_id);
 
   pagenum_t cur_num = header_page->root_page_num;
   unpin(table_id, HEADER_PAGE_POS);
 
   // leaf를 찾을때까지 계속해서 읽어나감
   while (true) {
-    page_t *page_buf = read_buffer(fd, table_id, cur_num);
-    page_header_t *page_header = (page_header_t *)&page_buf;
+    page_t* page_buf = read_buffer(fd, table_id, cur_num);
+    page_header_t* page_header = (page_header_t*)&page_buf;
 
     uint32_t is_leaf = page_header->is_leaf;
 
@@ -332,7 +333,7 @@ pagenum_t find_leaf(int fd, tableid_t table_id, int64_t key) {
     }
 
     int index = 0;
-    internal_page_t *internal_page = (internal_page_t *)&page_buf;
+    internal_page_t* internal_page = (internal_page_t*)&page_buf;
     while (index < internal_page->num_of_keys &&
            key >= internal_page->entries[index].key) {
       index++;

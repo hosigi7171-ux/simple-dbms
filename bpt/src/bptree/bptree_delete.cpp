@@ -1,5 +1,6 @@
 #include "bpt.h"
 #include "bpt_internal.h"
+#include "buf_mgr.h"
 
 // DELETION.
 
@@ -10,7 +11,7 @@
  * If target_node has no parent, return -2 (CANNOT_ROOT)
  */
 int get_kprime_index(int fd, tableid_t table_id, pagenum_t target_node,
-                     internal_page_t *parent_page) {
+                     internal_page_t* parent_page) {
   // 왼쪽 형제가 없는 경우
   if (parent_page->one_more_page_num == target_node) {
     return -1;
@@ -29,8 +30,8 @@ int get_kprime_index(int fd, tableid_t table_id, pagenum_t target_node,
 }
 
 pagenum_t adjust_root(int fd, tableid_t table_id, pagenum_t root) {
-  page_t *root_buf = read_buffer(fd, table_id, root);
-  page_header_t *root_header = (page_header_t *)root_buf;
+  page_t* root_buf = read_buffer(fd, table_id, root);
+  page_header_t* root_header = (page_header_t*)root_buf;
 
   /* Case: nonempty root.
    * Key and pointer have already been deleted,
@@ -48,13 +49,13 @@ pagenum_t adjust_root(int fd, tableid_t table_id, pagenum_t root) {
   // the first (only) child
   // as the new root.
   pagenum_t new_root;
-  internal_page_t *root_internal = (internal_page_t *)root_buf;
+  internal_page_t* root_internal = (internal_page_t*)root_buf;
   if (root_header->is_leaf == INTERNAL) {
     new_root = root_internal->one_more_page_num;
 
     if (new_root != PAGE_NULL) {
-      page_t *new_root_buf = read_buffer(fd, table_id, new_root);
-      page_header_t *new_root_header = (page_header_t *)new_root_buf;
+      page_t* new_root_buf = read_buffer(fd, table_id, new_root);
+      page_header_t* new_root_header = (page_header_t*)new_root_buf;
       new_root_header->parent_page_num = PAGE_NULL;
       write_buffer(table_id, new_root, new_root_buf);
     }
@@ -62,12 +63,12 @@ pagenum_t adjust_root(int fd, tableid_t table_id, pagenum_t root) {
     new_root = PAGE_NULL;
   }
 
-  file_free_page(fd, root);
+  free_page_in_buffer(fd, table_id, root);
 
   // update header
-  header_page_t *header_page = read_header_page(fd, table_id);
+  header_page_t* header_page = read_header_page(fd, table_id);
   header_page->root_page_num = new_root;
-  write_buffer(table_id, HEADER_PAGE_POS, (page_t *)header_page);
+  write_buffer(table_id, HEADER_PAGE_POS, (page_t*)header_page);
   unpin(table_id, HEADER_PAGE_POS);
 
   return SUCCESS;
@@ -78,12 +79,12 @@ pagenum_t adjust_root(int fd, tableid_t table_id, pagenum_t root) {
  * @brief Handles the merging logic of internal nodes
  * Insert k_prime, copy target's entry, and update the child's parent pointer
  */
-void coalesce_internal_nodes(int fd, tableid_t table_id, page_t *neighbor_buf,
-                             page_t *target_buf, int neighbor_num,
+void coalesce_internal_nodes(int fd, tableid_t table_id, page_t* neighbor_buf,
+                             page_t* target_buf, int neighbor_num,
                              int64_t k_prime) {
-  page_header_t *neighbor_header = (page_header_t *)neighbor_buf;
-  internal_page_t *neighbor_internal = (internal_page_t *)neighbor_buf;
-  internal_page_t *target_internal = (internal_page_t *)target_buf;
+  page_header_t* neighbor_header = (page_header_t*)neighbor_buf;
+  internal_page_t* neighbor_internal = (internal_page_t*)neighbor_buf;
+  internal_page_t* target_internal = (internal_page_t*)target_buf;
 
   int neighbor_insertion_index = neighbor_header->num_of_keys;
 
@@ -106,8 +107,8 @@ void coalesce_internal_nodes(int fd, tableid_t table_id, page_t *neighbor_buf,
   pagenum_t child_num =
       neighbor_internal->entries[neighbor_insertion_index].page_num;
   if (child_num != PAGE_NULL) {
-    page_t *child_buf = read_buffer(fd, table_id, child_num);
-    ((page_header_t *)child_buf)->parent_page_num = neighbor_num;
+    page_t* child_buf = read_buffer(fd, table_id, child_num);
+    ((page_header_t*)child_buf)->parent_page_num = neighbor_num;
     write_buffer(table_id, child_num, child_buf);
     unpin(table_id, child_num);
   }
@@ -115,8 +116,8 @@ void coalesce_internal_nodes(int fd, tableid_t table_id, page_t *neighbor_buf,
        i++) {
     child_num = neighbor_internal->entries[i].page_num;
     if (child_num != PAGE_NULL) {
-      page_t *child_buf = read_buffer(fd, table_id, child_num);
-      ((page_header_t *)child_buf)->parent_page_num = neighbor_num;
+      page_t* child_buf = read_buffer(fd, table_id, child_num);
+      ((page_header_t*)child_buf)->parent_page_num = neighbor_num;
       write_buffer(table_id, child_num, child_buf);
       unpin(table_id, child_num);
     }
@@ -128,10 +129,10 @@ void coalesce_internal_nodes(int fd, tableid_t table_id, page_t *neighbor_buf,
  * @brief Handles the merging logic of leaf nodes
  * Copy records from target and update right_sibling_page_num
  */
-void coalesce_leaf_nodes(page_t *neighbor_buf, page_t *target_buf) {
-  page_header_t *neighbor_header = (page_header_t *)neighbor_buf;
-  leaf_page_t *neighbor_leaf = (leaf_page_t *)neighbor_buf;
-  leaf_page_t *target_leaf = (leaf_page_t *)target_buf;
+void coalesce_leaf_nodes(page_t* neighbor_buf, page_t* target_buf) {
+  page_header_t* neighbor_header = (page_header_t*)neighbor_buf;
+  leaf_page_t* neighbor_leaf = (leaf_page_t*)neighbor_buf;
+  leaf_page_t* target_leaf = (leaf_page_t*)target_buf;
 
   int neighbor_insertion_index = neighbor_header->num_of_keys;
 
@@ -162,11 +163,11 @@ int coalesce_nodes(int fd, tableid_t table_id, pagenum_t target_num,
     neighbor_num = tmp_num;
   }
 
-  page_t *neighbor_buf = read_buffer(fd, table_id, neighbor_num);
-  page_t *target_buf = read_buffer(fd, table_id, target_num);
+  page_t* neighbor_buf = read_buffer(fd, table_id, neighbor_num);
+  page_t* target_buf = read_buffer(fd, table_id, target_num);
 
-  page_header_t *neighbor_header = (page_header_t *)neighbor_buf;
-  page_header_t *target_header = (page_header_t *)target_buf;
+  page_header_t* neighbor_header = (page_header_t*)neighbor_buf;
+  page_header_t* target_header = (page_header_t*)target_buf;
 
   pagenum_t parent_num = target_header->parent_page_num;
 
@@ -191,10 +192,10 @@ int coalesce_nodes(int fd, tableid_t table_id, pagenum_t target_num,
  * @brief Redistributes entries from the left neighbor node to the target node
  */
 void redistribute_from_left(int fd, tableid_t table_id, pagenum_t target_num,
-                            page_t *target_buf, page_t *neighbor_buf,
-                            internal_page_t *parent_page, int k_prime_index,
+                            page_t* target_buf, page_t* neighbor_buf,
+                            internal_page_t* parent_page, int k_prime_index,
                             int k_prime) {
-  page_header_t *target_header = (page_header_t *)target_buf;
+  page_header_t* target_header = (page_header_t*)target_buf;
 
   if (target_header->is_leaf == INTERNAL) {
     redistribute_internal_from_left(fd, table_id, target_num, target_buf,
@@ -212,14 +213,14 @@ void redistribute_from_left(int fd, tableid_t table_id, pagenum_t target_num,
  * to the first * position of the target node
  */
 void redistribute_internal_from_left(int fd, tableid_t table_id,
-                                     pagenum_t target_num, page_t *target_buf,
-                                     page_t *neighbor_buf,
-                                     internal_page_t *parent_page,
+                                     pagenum_t target_num, page_t* target_buf,
+                                     page_t* neighbor_buf,
+                                     internal_page_t* parent_page,
                                      int k_prime_index, int k_prime) {
-  page_header_t *target_header = (page_header_t *)target_buf;
-  internal_page_t *target_internal = (internal_page_t *)target_buf;
-  internal_page_t *neighbor_internal = (internal_page_t *)neighbor_buf;
-  page_header_t *neighbor_header = (page_header_t *)neighbor_buf;
+  page_header_t* target_header = (page_header_t*)target_buf;
+  internal_page_t* target_internal = (internal_page_t*)target_buf;
+  internal_page_t* neighbor_internal = (internal_page_t*)neighbor_buf;
+  page_header_t* neighbor_header = (page_header_t*)neighbor_buf;
 
   for (int index = target_header->num_of_keys; index > 0; index--) {
     target_internal->entries[index] = target_internal->entries[index - 1];
@@ -233,8 +234,8 @@ void redistribute_internal_from_left(int fd, tableid_t table_id,
   target_internal->one_more_page_num = last_num_neighbor;
 
   if (last_num_neighbor != PAGE_NULL) {
-    page_t *child_buf = read_buffer(fd, table_id, last_num_neighbor);
-    ((page_header_t *)child_buf)->parent_page_num = target_num;
+    page_t* child_buf = read_buffer(fd, table_id, last_num_neighbor);
+    ((page_header_t*)child_buf)->parent_page_num = target_num;
     write_buffer(table_id, last_num_neighbor, child_buf);
     unpin(table_id, last_num_neighbor);
   }
@@ -251,13 +252,13 @@ void redistribute_internal_from_left(int fd, tableid_t table_id,
  * @brief Move the last record of the left neighboring node from the leaf node
  * to the first position of the target node
  */
-void redistribute_leaf_from_left(page_t *target_buf, page_t *neighbor_buf,
-                                 internal_page_t *parent_page,
+void redistribute_leaf_from_left(page_t* target_buf, page_t* neighbor_buf,
+                                 internal_page_t* parent_page,
                                  int k_prime_index) {
-  page_header_t *target_header = (page_header_t *)target_buf;
-  leaf_page_t *target_leaf = (leaf_page_t *)target_buf;
-  leaf_page_t *neighbor_leaf = (leaf_page_t *)neighbor_buf;
-  page_header_t *neighbor_header = (page_header_t *)neighbor_buf;
+  page_header_t* target_header = (page_header_t*)target_buf;
+  leaf_page_t* target_leaf = (leaf_page_t*)target_buf;
+  leaf_page_t* neighbor_leaf = (leaf_page_t*)neighbor_buf;
+  page_header_t* neighbor_header = (page_header_t*)neighbor_buf;
 
   for (int i = target_header->num_of_keys; i > 0; i--) {
     target_leaf->records[i] = target_leaf->records[i - 1];
@@ -277,10 +278,10 @@ void redistribute_leaf_from_left(page_t *target_buf, page_t *neighbor_buf,
  * @brief Redistributes entries from the right neighbor node to the target node
  */
 void redistribute_from_right(int fd, tableid_t table_id, pagenum_t target_num,
-                             page_t *target_buf, page_t *neighbor_buf,
-                             internal_page_t *parent_page, int k_prime_index,
+                             page_t* target_buf, page_t* neighbor_buf,
+                             internal_page_t* parent_page, int k_prime_index,
                              int k_prime) {
-  page_header_t *target_header = (page_header_t *)target_buf;
+  page_header_t* target_header = (page_header_t*)target_buf;
 
   if (target_header->is_leaf == INTERNAL) {
     redistribute_internal_from_right(fd, table_id, target_num, target_buf,
@@ -298,14 +299,14 @@ void redistribute_from_right(int fd, tableid_t table_id, pagenum_t target_num,
  * to the last position of the target node
  */
 void redistribute_internal_from_right(int fd, tableid_t table_id,
-                                      pagenum_t target_num, page_t *target_buf,
-                                      page_t *neighbor_buf,
-                                      internal_page_t *parent_page,
+                                      pagenum_t target_num, page_t* target_buf,
+                                      page_t* neighbor_buf,
+                                      internal_page_t* parent_page,
                                       int k_prime_index, int k_prime) {
-  page_header_t *target_header = (page_header_t *)target_buf;
-  internal_page_t *target_internal = (internal_page_t *)target_buf;
-  internal_page_t *neighbor_internal = (internal_page_t *)neighbor_buf;
-  page_header_t *neighbor_header = (page_header_t *)neighbor_buf;
+  page_header_t* target_header = (page_header_t*)target_buf;
+  internal_page_t* target_internal = (internal_page_t*)target_buf;
+  internal_page_t* neighbor_internal = (internal_page_t*)neighbor_buf;
+  page_header_t* neighbor_header = (page_header_t*)neighbor_buf;
 
   target_internal->entries[target_header->num_of_keys].key = k_prime;
 
@@ -314,8 +315,8 @@ void redistribute_internal_from_right(int fd, tableid_t table_id,
       num_from_neighbor;
 
   if (num_from_neighbor != PAGE_NULL) {
-    page_t *child_buf = read_buffer(fd, table_id, num_from_neighbor);
-    ((page_header_t *)child_buf)->parent_page_num = target_num;
+    page_t* child_buf = read_buffer(fd, table_id, num_from_neighbor);
+    ((page_header_t*)child_buf)->parent_page_num = target_num;
     write_buffer(table_id, num_from_neighbor, child_buf);
     unpin(table_id, num_from_neighbor);
   }
@@ -336,13 +337,13 @@ void redistribute_internal_from_right(int fd, tableid_t table_id,
  * @brief Move the first record of the right neighboring node from the leaf node
  * to the last position of the target node
  */
-void redistribute_leaf_from_right(page_t *target_buf, page_t *neighbor_buf,
-                                  internal_page_t *parent_page,
+void redistribute_leaf_from_right(page_t* target_buf, page_t* neighbor_buf,
+                                  internal_page_t* parent_page,
                                   int k_prime_index) {
-  page_header_t *target_header = (page_header_t *)target_buf;
-  leaf_page_t *target_leaf = (leaf_page_t *)target_buf;
-  leaf_page_t *neighbor_leaf = (leaf_page_t *)neighbor_buf;
-  page_header_t *neighbor_header = (page_header_t *)neighbor_buf;
+  page_header_t* target_header = (page_header_t*)target_buf;
+  leaf_page_t* target_leaf = (leaf_page_t*)target_buf;
+  leaf_page_t* neighbor_leaf = (leaf_page_t*)neighbor_buf;
+  page_header_t* neighbor_header = (page_header_t*)neighbor_buf;
 
   target_leaf->records[target_header->num_of_keys] = neighbor_leaf->records[0];
 
@@ -365,15 +366,15 @@ void redistribute_leaf_from_right(page_t *target_buf, page_t *neighbor_buf,
 int redistribute_nodes(int fd, tableid_t table_id, pagenum_t target_num,
                        pagenum_t neighbor_num, int kprime_index_from_get,
                        int k_prime_index, int k_prime) {
-  page_t *target_buf = read_buffer(fd, table_id, target_num);
-  page_t *neighbor_buf = read_buffer(fd, table_id, neighbor_num);
+  page_t* target_buf = read_buffer(fd, table_id, target_num);
+  page_t* neighbor_buf = read_buffer(fd, table_id, neighbor_num);
 
-  page_header_t *target_header = (page_header_t *)target_buf;
-  page_header_t *neighbor_header = (page_header_t *)neighbor_buf;
+  page_header_t* target_header = (page_header_t*)target_buf;
+  page_header_t* neighbor_header = (page_header_t*)neighbor_buf;
   pagenum_t parent_num = target_header->parent_page_num;
 
-  internal_page_t *parent_page =
-      (internal_page_t *)read_buffer(fd, table_id, parent_num);
+  internal_page_t* parent_page =
+      (internal_page_t*)read_buffer(fd, table_id, parent_num);
 
   /// target is not leftmost, so neighbor is to the left
   if (kprime_index_from_get != -1) {
@@ -392,7 +393,7 @@ int redistribute_nodes(int fd, tableid_t table_id, pagenum_t target_num,
 
   write_buffer(table_id, target_num, target_buf);
   write_buffer(table_id, neighbor_num, neighbor_buf);
-  write_buffer(table_id, parent_num, (page_t *)parent_page);
+  write_buffer(table_id, parent_num, (page_t*)parent_page);
 
   unpin(table_id, target_num);
   unpin(table_id, neighbor_num);
@@ -405,8 +406,8 @@ int redistribute_nodes(int fd, tableid_t table_id, pagenum_t target_num,
  * @brief remove record from leaf node, if success return SUCCESS(0) else
  * FAILURE(-1)
  */
-int remove_record_from_node(leaf_page_t *target_page, int64_t key,
-                            const char *value) {
+int remove_record_from_node(leaf_page_t* target_page, int64_t key,
+                            const char* value) {
   // Remove the record and shift other records accordingly.
   int index = 0;
   while (target_page->records[index].key != key) {
@@ -431,7 +432,7 @@ int remove_record_from_node(leaf_page_t *target_page, int64_t key,
  * @brief remove entry from internal node, if success return SUCCESS(0) else
  * FAILURE(-1)
  */
-int remove_entry_from_node(internal_page_t *target_page, int64_t key) {
+int remove_entry_from_node(internal_page_t* target_page, int64_t key) {
   // Remove the key and shift other keys accordingly.
   int index = 0;
   while (target_page->entries[index].key != key) {
@@ -458,11 +459,10 @@ int remove_entry_from_node(internal_page_t *target_page, int64_t key) {
  * parents to handle underflow
  */
 int find_neighbor_and_kprime(int fd, tableid_t table_id, pagenum_t target_node,
-                             internal_page_t *parent_page,
-                             page_header_t *target_header,
-                             pagenum_t *neighbor_num_out,
-                             int *k_prime_key_index_out) {
-
+                             internal_page_t* parent_page,
+                             page_header_t* target_header,
+                             pagenum_t* neighbor_num_out,
+                             int* k_prime_key_index_out) {
   int kprime_index_from_get =
       get_kprime_index(fd, table_id, target_node, parent_page);
 
@@ -473,7 +473,7 @@ int find_neighbor_and_kprime(int fd, tableid_t table_id, pagenum_t target_node,
   } else {
     // target is Pi neighbor Pi-1.
     int target_pointer_index =
-        kprime_index_from_get; // Index of the pointer to target
+        kprime_index_from_get;  // Index of the pointer to target
 
     *k_prime_key_index_out = target_pointer_index;
 
@@ -496,12 +496,12 @@ int find_neighbor_and_kprime(int fd, tableid_t table_id, pagenum_t target_node,
  * call
  */
 int handle_underflow(int fd, tableid_t table_id, pagenum_t target_node) {
-  page_header_t *node_header =
-      (page_header_t *)read_buffer(fd, table_id, target_node);
+  page_header_t* node_header =
+      (page_header_t*)read_buffer(fd, table_id, target_node);
 
   pagenum_t parent_num = node_header->parent_page_num;
-  internal_page_t *parent_page =
-      (internal_page_t *)read_buffer(fd, table_id, parent_num);
+  internal_page_t* parent_page =
+      (internal_page_t*)read_buffer(fd, table_id, parent_num);
 
   pagenum_t neighbor_num;
   int k_prime_key_index;
@@ -512,8 +512,8 @@ int handle_underflow(int fd, tableid_t table_id, pagenum_t target_node) {
 
   int64_t k_prime = parent_page->entries[k_prime_key_index].key;
 
-  page_header_t *neighbor_header =
-      (page_header_t *)read_buffer(fd, table_id, neighbor_num);
+  page_header_t* neighbor_header =
+      (page_header_t*)read_buffer(fd, table_id, neighbor_num);
   int capacity = node_header->is_leaf ? RECORD_CNT : ENTRY_CNT - 1;
 
   unpin(table_id, target_node);
@@ -536,23 +536,23 @@ int handle_underflow(int fd, tableid_t table_id, pagenum_t target_node) {
  * changes to preserve the B+ tree properties.
  */
 int delete_entry(int fd, tableid_t table_id, pagenum_t target_node, int64_t key,
-                 const char *value) {
-  page_t *node_buf = read_buffer(fd, table_id, target_node);
-  page_header_t *node_header = (page_header_t *)node_buf;
+                 const char* value) {
+  page_t* node_buf = read_buffer(fd, table_id, target_node);
+  page_header_t* node_header = (page_header_t*)node_buf;
 
   // Case: Remove key and pointer from node
   int remove_result = FAILURE;
   switch (node_header->is_leaf) {
-  case LEAF:
-    remove_result =
-        remove_record_from_node((leaf_page_t *)node_buf, key, value);
-    break;
-  case INTERNAL:
-    remove_result = remove_entry_from_node((internal_page_t *)node_buf, key);
-    break;
-  default:
-    perror("delete_entry error: Unknown node type");
-    return FAILURE;
+    case LEAF:
+      remove_result =
+          remove_record_from_node((leaf_page_t*)node_buf, key, value);
+      break;
+    case INTERNAL:
+      remove_result = remove_entry_from_node((internal_page_t*)node_buf, key);
+      break;
+    default:
+      perror("delete_entry error: Unknown node type");
+      return FAILURE;
   }
   if (remove_result != SUCCESS) {
     return FAILURE;
@@ -561,7 +561,7 @@ int delete_entry(int fd, tableid_t table_id, pagenum_t target_node, int64_t key,
   unpin(table_id, target_node);
 
   // Case: Deletion from the root
-  header_page_t *header_page = (header_page_t *)read_header_page(fd, table_id);
+  header_page_t* header_page = (header_page_t*)read_header_page(fd, table_id);
 
   if (target_node == header_page->root_page_num) {
     return adjust_root(fd, table_id, header_page->root_page_num);
@@ -581,11 +581,11 @@ void destroy_tree_nodes(int fd, tableid_t table_id, pagenum_t root_num) {
     return;
   }
 
-  page_t *page_buf = read_buffer(fd, table_id, root_num);
-  page_header_t *page_header = (page_header_t *)page_buf;
+  page_t* page_buf = read_buffer(fd, table_id, root_num);
+  page_header_t* page_header = (page_header_t*)page_buf;
 
   if (page_header->is_leaf == INTERNAL) {
-    internal_page_t *internal_page = (internal_page_t *)page_buf;
+    internal_page_t* internal_page = (internal_page_t*)page_buf;
 
     destroy_tree_nodes(fd, table_id, internal_page->one_more_page_num);
 
@@ -599,7 +599,7 @@ void destroy_tree_nodes(int fd, tableid_t table_id, pagenum_t root_num) {
 }
 
 void destroy_tree(int fd, tableid_t table_id) {
-  header_page_t *header_page = read_header_page(fd, table_id);
+  header_page_t* header_page = read_header_page(fd, table_id);
 
   pagenum_t root_num = header_page->root_page_num;
   if (root_num != PAGE_NULL) {
@@ -607,6 +607,6 @@ void destroy_tree(int fd, tableid_t table_id) {
   }
   header_page->root_page_num = PAGE_NULL;
 
-  write_buffer(table_id, HEADER_PAGE_POS, (page_t *)header_page);
+  write_buffer(table_id, HEADER_PAGE_POS, (page_t*)header_page);
   unpin(table_id, HEADER_PAGE_POS);
 }

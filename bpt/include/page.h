@@ -26,7 +26,7 @@ typedef struct {
   pagenum_t free_page_num;
   pagenum_t root_page_num;
   pagenum_t num_of_pages;
-  char reserved[HEADER_PAGE_RESERVED]; // not used
+  char reserved[HEADER_PAGE_RESERVED];  // not used
 } header_page_t;
 
 // free page
@@ -51,10 +51,10 @@ typedef struct {
 typedef struct {
   // header
   pagenum_t parent_page_num;
-  uint32_t is_leaf; // 1
+  uint32_t is_leaf;  // 1
   uint32_t num_of_keys;
-  char reserved[NON_HEADER_PAGE_RESERVED]; // not used
-  pagenum_t right_sibling_page_num;        // if rihgtmost, 0
+  char reserved[NON_HEADER_PAGE_RESERVED];  // not used
+  pagenum_t right_sibling_page_num;         // if rihgtmost, 0
 
   record_t records[RECORD_CNT];
 } leaf_page_t;
@@ -63,10 +63,10 @@ typedef struct {
 typedef struct {
   // header
   pagenum_t parent_page_num;
-  int32_t is_leaf; // 0
+  int32_t is_leaf;  // 0
   int32_t num_of_keys;
-  char reserved[NON_HEADER_PAGE_RESERVED]; // not used
-  pagenum_t one_more_page_num; // leftmost page num to know key ranges
+  char reserved[NON_HEADER_PAGE_RESERVED];  // not used
+  pagenum_t one_more_page_num;  // leftmost page num to know key ranges
 
   entry_t entries[ENTRY_CNT];
 } internal_page_t;

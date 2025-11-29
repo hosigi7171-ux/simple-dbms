@@ -1,16 +1,18 @@
 #include "bpt.h"
 #include "bpt_internal.h"
+#include "buf_mgr.h"
+#include "file.h"
 
 /* Finds and returns success(0) or fail(-1)
  */
-int find(int fd, tableid_t table_id, int64_t key, char *result_buf) {
+int find(int fd, tableid_t table_id, int64_t key, char* result_buf) {
   pagenum_t leaf_num = find_leaf(fd, table_id, key);
   if (leaf_num == PAGE_NULL) {
     return FAILURE;
   }
 
   // leaf_page 에서 키에 해당하는 값 찾기
-  leaf_page_t *leaf_page = (leaf_page_t *)read_buffer(fd, table_id, leaf_num);
+  leaf_page_t* leaf_page = (leaf_page_t*)read_buffer(fd, table_id, leaf_num);
 
   int index = 0;
 
@@ -36,11 +38,11 @@ int find(int fd, tableid_t table_id, int64_t key, char *result_buf) {
  * must be used before insert
  */
 void init_header_page(int fd, tableid_t table_id) {
-  header_page_t *header_page =
-      (header_page_t *)read_buffer(fd, table_id, HEADER_PAGE_POS);
+  header_page_t* header_page =
+      (header_page_t*)read_buffer(fd, table_id, HEADER_PAGE_POS);
   header_page->num_of_pages = HEADER_PAGE_POS + 1;
 
-  write_buffer(table_id, HEADER_PAGE_POS, (page_t *)header_page);
+  write_buffer(table_id, HEADER_PAGE_POS, (page_t*)header_page);
   unpin(table_id, HEADER_PAGE_POS);
 }
 
@@ -50,7 +52,7 @@ void init_header_page(int fd, tableid_t table_id) {
  * however necessary to maintain the B+ tree
  * properties.
  */
-int bpt_insert(int fd, tableid_t table_id, int64_t key, char *value) {
+int bpt_insert(int fd, tableid_t table_id, int64_t key, char* value) {
   pagenum_t leaf;
 
   char result_buf[VALUE_SIZE];
@@ -59,7 +61,7 @@ int bpt_insert(int fd, tableid_t table_id, int64_t key, char *value) {
   }
 
   // Case: the tree does not exist yet. Start a new tree.
-  header_page_t *header_page = (header_page_t *)read_header_page(fd, table_id);
+  header_page_t* header_page = (header_page_t*)read_header_page(fd, table_id);
 
   pagenum_t root_num = header_page->root_page_num;
   if (root_num == PAGE_NULL) {
@@ -70,7 +72,7 @@ int bpt_insert(int fd, tableid_t table_id, int64_t key, char *value) {
   leaf = find_leaf(fd, table_id, key);
 
   // Case: leaf has room for key and pointer.
-  leaf_page_t *leaf_page = (leaf_page_t *)read_buffer(fd, table_id, leaf);
+  leaf_page_t* leaf_page = (leaf_page_t*)read_buffer(fd, table_id, leaf);
 
   if (leaf_page->num_of_keys < RECORD_CNT) {
     return insert_into_leaf(fd, table_id, leaf, leaf_page, key, value);

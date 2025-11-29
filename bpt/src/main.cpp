@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "bpt.h"  // 원래는 bpt 넣으면 안되지만 그냥 테스트용으로 넣음
 #include "db_api.h"
 
 int main(int argc, char** argv) {
