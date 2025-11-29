@@ -1,18 +1,16 @@
 #include "bpt.h"
 #include "bpt_internal.h"
 
-/* Finds and returns success(0) or fail(1)
+/* Finds and returns success(0) or fail(-1)
  */
-int find(int64_t key, char *result_buf) {
-  pagenum_t leaf_num = find_leaf(key);
+int find(int fd, tableid_t table_id, int64_t key, char *result_buf) {
+  pagenum_t leaf_num = find_leaf(fd, table_id, key);
   if (leaf_num == PAGE_NULL) {
     return FAILURE;
   }
 
   // leaf_page 에서 키에 해당하는 값 찾기
-  page_t tmp_page;
-  file_read_page(leaf_num, &tmp_page);
-  leaf_page_t *leaf_page = (leaf_page_t *)&tmp_page;
+  leaf_page_t *leaf_page = (leaf_page_t *)read_buffer(fd, table_id, leaf_num);
 
   int index = 0;
 
@@ -24,9 +22,12 @@ int find(int64_t key, char *result_buf) {
   // 해당하는 키를 찾았으면
   if (index != leaf_page->num_of_keys) {
     copy_value(result_buf, leaf_page->records[index].value, VALUE_SIZE);
+
+    unpin(table_id, leaf_num);
     return SUCCESS;
   }
 
+  unpin(table_id, leaf_num);
   return FAILURE;
 }
 
@@ -34,13 +35,13 @@ int find(int64_t key, char *result_buf) {
  * @brief init header page
  * must be used before insert
  */
-void init_header_page() {
-  page_t header_buf;
-  memset(&header_buf, 0, PAGE_SIZE);
-  header_page_t *header_page = (header_page_t *)&header_buf;
+void init_header_page(int fd, tableid_t table_id) {
+  header_page_t *header_page =
+      (header_page_t *)read_buffer(fd, table_id, HEADER_PAGE_POS);
   header_page->num_of_pages = HEADER_PAGE_POS + 1;
 
-  file_write_page(HEADER_PAGE_POS, (page_t *)header_page);
+  write_buffer(table_id, HEADER_PAGE_POS, (page_t *)header_page);
+  unpin(table_id, HEADER_PAGE_POS);
 }
 
 /* Master insertion function.
@@ -49,55 +50,51 @@ void init_header_page() {
  * however necessary to maintain the B+ tree
  * properties.
  */
-int insert(int64_t key, char *value) {
+int bpt_insert(int fd, tableid_t table_id, int64_t key, char *value) {
   pagenum_t leaf;
 
   char result_buf[VALUE_SIZE];
-  if (find(key, result_buf) == SUCCESS) {
+  if (find(fd, table_id, key, result_buf) == SUCCESS) {
     return FAILURE;
   }
 
   // Case: the tree does not exist yet. Start a new tree.
-  page_t header_page_buf;
-  file_read_page(HEADER_PAGE_POS, &header_page_buf);
-  header_page_t *h_page = (header_page_t *)&header_page_buf;
+  header_page_t *header_page = (header_page_t *)read_header_page(fd, table_id);
 
-  pagenum_t root_num = h_page->root_page_num;
+  pagenum_t root_num = header_page->root_page_num;
   if (root_num == PAGE_NULL) {
-    return start_new_tree(key, value);
+    return start_new_tree(fd, table_id, key, value);
   }
 
   // Case: the tree already exists.(Rest of function body.)
-  leaf = find_leaf(key);
+  leaf = find_leaf(fd, table_id, key);
 
   // Case: leaf has room for key and pointer.
-  page_t tmp_leaf_page;
-  file_read_page(leaf, &tmp_leaf_page);
-  leaf_page_t *leaf_page = (leaf_page_t *)&tmp_leaf_page;
+  leaf_page_t *leaf_page = (leaf_page_t *)read_buffer(fd, table_id, leaf);
 
   if (leaf_page->num_of_keys < RECORD_CNT) {
-    return insert_into_leaf(leaf, &tmp_leaf_page, key, value);
+    return insert_into_leaf(fd, table_id, leaf, leaf_page, key, value);
   }
 
   // Case:  leaf must be split.
-  return insert_into_leaf_after_splitting(leaf, key, value);
+  return insert_into_leaf_after_splitting(fd, table_id, leaf, key, value);
 }
 
 /* Master deletion function.
  */
-int delete (int64_t key) {
+int bpt_delete(int fd, tableid_t table_id, int64_t key) {
   pagenum_t leaf;
 
   char value_buf[VALUE_SIZE];
   // if not exists fail
-  if (find(key, value_buf) != SUCCESS) {
+  if (find(fd, table_id, key, value_buf) != SUCCESS) {
     return FAILURE;
   }
 
-  leaf = find_leaf(key);
+  leaf = find_leaf(fd, table_id, key);
 
   if (leaf != PAGE_NULL) {
-    return delete_entry(leaf, key, value_buf);
+    return delete_entry(fd, table_id, leaf, key, value_buf);
   }
   return FAILURE;
 }

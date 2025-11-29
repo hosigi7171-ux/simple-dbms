@@ -1,11 +1,12 @@
 #ifndef __BPT_H__
 #define __BPT_H__
 
+#include "buf_mgr.h"
+#include "common_config.h"
 #include "file.h"
-
 // Uncomment the line below if you are compiling on Windows.
 // #define WINDOWS
-#include <inttypes.h>
+#include <cinttypes>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -22,8 +23,6 @@
 #ifndef INTERNAL_ORDER
 #define INTERNAL_ORDER ENTRY_CNT + 1
 #endif
-#define SUCCESS 0
-#define FAILURE -1
 #define CANNOT_ROOT -2
 #define MAX_RANGE_SIZE 10000 // for finding range
 #define MIN_KEYS 1           // for delayed merge
@@ -61,52 +60,60 @@ void print_license(int licence_part);
 void usage(void);
 void enqueue(pagenum_t new_page_num, int level);
 queue *dequeue(void);
-int height(pagenum_t header_page_num);
-void print_leaves(void);
-void print_tree();
-void find_and_print(int64_t key);
-int find_and_print_range(int64_t key_start, int64_t key_end);
-int find_range(int64_t key_start, int64_t key_end, int64_t returned_keys[],
-               pagenum_t returned_pages[], int returned_indices[]);
-pagenum_t find_leaf(int64_t key);
-int find(int64_t key, char *result_buf);
+int height(int fd, tableid_t table_id, pagenum_t header_page_num);
+void print_leaves(int fd, tableid_t table_id);
+void print_tree(int fd, tableid_t table_id);
+void find_and_print(int fd, tableid_t table_id, int64_t key);
+int find_and_print_range(int fd, tableid_t table_id, int64_t key_start,
+                         int64_t key_end);
+int find_range(int fd, tableid_t table_id, int64_t key_start, int64_t key_end,
+               int64_t returned_keys[], pagenum_t returned_pages[],
+               int returned_indices[]);
+pagenum_t find_leaf(int fd, tableid_t table_id, int64_t key);
+int find(int fd, tableid_t table_id, int64_t key, char *result_buf);
 int cut(int length);
 void copy_value(char *dest, const char *src, size_t size);
 
 // Insertion.
 record_t *make_record(char *value);
-pagenum_t make_node(uint32_t isleaf);
-pagenum_t make_leaf(void);
+pagenum_t make_node(int fd, tableid_t table_id, uint32_t isleaf);
 int get_index_after_left_child(page_t *parent_buffer, pagenum_t left_num);
-int insert_into_leaf(pagenum_t leaf_num, page_t *leaf_buffer, int64_t key,
-                     char *value);
-int insert_into_leaf_after_splitting(pagenum_t leaf, int64_t key, char *value);
-int insert_into_node(pagenum_t parent, int64_t left_index, int64_t key,
-                     pagenum_t right);
-int insert_into_node_after_splitting(pagenum_t parent, int64_t left_index,
+int insert_into_leaf(int fd, tableid_t table_id, pagenum_t leaf_num,
+                     leaf_page_t *leaf_page, int64_t key, char *value);
+int insert_into_leaf_after_splitting(int fd, tableid_t table_id, pagenum_t leaf,
+                                     int64_t key, char *value);
+int insert_into_node(int fd, tableid_t table_id, pagenum_t parent,
+                     int64_t left_index, int64_t key, pagenum_t right);
+int insert_into_node_after_splitting(int fd, tableid_t table_id,
+                                     pagenum_t parent, int64_t left_index,
                                      int64_t key, pagenum_t right);
-int insert_into_parent(pagenum_t left, int64_t key, pagenum_t right);
-int insert_into_new_root(pagenum_t left, int64_t key, pagenum_t right);
-int start_new_tree(int64_t key, char *value);
-void init_header_page();
-void link_header_page(pagenum_t root);
-int insert(int64_t key, char *value);
+int insert_into_parent(int fd, tableid_t table_id, pagenum_t left, int64_t key,
+                       pagenum_t right);
+int insert_into_new_root(int fd, tableid_t table_id, pagenum_t left,
+                         int64_t key, pagenum_t right);
+int start_new_tree(int fd, tableid_t table_id, int64_t key, char *value);
+void init_header_page(int fd, tableid_t table_id);
+void link_header_page(int fd, tableid_t table_id, pagenum_t root);
+int bpt_insert(int fd, tableid_t table_id, int64_t key, char *value);
 
 // Deletion.
-int get_kprime_index(pagenum_t target_node);
+int get_kprime_index(int fd, tableid_t table_id, pagenum_t target_node,
+                     internal_page_t *parent_page);
 int remove_record_from_node(leaf_page_t *target_page, int64_t key,
                             const char *value);
 int remove_entry_from_node(internal_page_t *target_page, int64_t key);
-pagenum_t adjust_root(pagenum_t root);
-int coalesce_nodes(pagenum_t target_num, pagenum_t neighbor_num,
-                   int kprime_index_from_get, int64_t k_prime);
-int redistribute_nodes(pagenum_t target_num, pagenum_t neighbor_num,
-                       int kprime_index_from_get, int k_prime_index,
-                       int k_prime);
-int delete_entry(pagenum_t target_node, int64_t key, const char *value);
-int delete (int64_t key);
+pagenum_t adjust_root(int fd, tableid_t table_id, pagenum_t root);
+int coalesce_nodes(int fd, tableid_t table_id, pagenum_t target_num,
+                   pagenum_t neighbor_num, int kprime_index_from_get,
+                   int64_t k_prime);
+int redistribute_nodes(int fd, tableid_t table_id, pagenum_t target_num,
+                       pagenum_t neighbor_num, int kprime_index_from_get,
+                       int k_prime_index, int k_prime);
+int delete_entry(int fd, tableid_t table_id, pagenum_t target_node, int64_t key,
+                 const char *value);
+int bpt_delete(int fd, tableid_t table_id, int64_t key);
 
-void destroy_tree_nodes(pagenum_t root);
-void destroy_tree(void);
+void destroy_tree_nodes(int fd, tableid_t table_id, pagenum_t root);
+void destroy_tree(int fd, tableid_t table_id);
 
 #endif /* __BPT_H__*/
