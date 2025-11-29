@@ -2,7 +2,7 @@
 #define PAGE_H
 
 #include "common_config.h"
-#include <cstdint>
+#include "stdint.h"
 
 #define PAGE_SIZE 4096
 #define HEADER_PAGE_RESERVED 4072

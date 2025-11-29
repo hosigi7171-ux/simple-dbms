@@ -1,7 +1,7 @@
 #ifndef COMMON_CONFIG_H
 #define COMMON_CONFIG_H
 
-#include <cstdint>
+#include "stdint.h"
 
 #define MAX_TABLE_COUNT 10
 #define SUCCESS 0
