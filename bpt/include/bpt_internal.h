@@ -2,6 +2,7 @@
 #define BPT_INTERNAL_H
 
 #include "common_config.h"
+#include "page.h"
 
 /**
  * Declaration of helper functions used only bpt
