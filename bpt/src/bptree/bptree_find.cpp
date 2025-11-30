@@ -319,6 +319,11 @@ pagenum_t find_leaf(int fd, tableid_t table_id, int64_t key) {
   pagenum_t cur_num = header_page->root_page_num;
   unpin(table_id, HEADER_PAGE_POS);
 
+  // 루트 페이지가 존재하지 않으면
+  if (cur_num == PAGE_NULL || header_page->num_of_pages == 1) {
+    return PAGE_NULL;
+  }
+
   // leaf를 찾을때까지 계속해서 읽어나감
   while (true) {
     page_t* page_buf = read_buffer(fd, table_id, cur_num);
