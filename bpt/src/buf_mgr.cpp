@@ -88,7 +88,7 @@ void write_buffer(tableid_t table_id, pagenum_t page_num, page_t* page) {
 
 header_page_t* read_header_page(int fd, tableid_t table_id) {
   page_t* header_page_buff = read_buffer(fd, table_id, HEADER_PAGE_POS);
-  header_page_t* header_page_ptr = (header_page_t*)&header_page_buff;
+  header_page_t* header_page_ptr = (header_page_t*)header_page_buff;
 
   return header_page_ptr;
 }
