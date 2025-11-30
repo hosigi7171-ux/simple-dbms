@@ -123,7 +123,8 @@ void prefetch(int fd, pagenum_t page_num, tableid_t table_id,
     file_read_page(fd, prefetched_page_num, frame_ptr);
     buf_mgr.page_table[table_id].insert(
         std::make_pair(prefetched_page_num, prefetched_index));
-    set_new_prefetched_bcb(table_id, page_num, index, frame_ptr);
+    set_new_prefetched_bcb(table_id, prefetched_page_num, prefetched_index,
+                           frame_ptr);
   }
 }
 
