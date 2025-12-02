@@ -317,17 +317,18 @@ pagenum_t find_leaf(int fd, tableid_t table_id, int64_t key) {
   header_page_t* header_page = read_header_page(fd, table_id);
 
   pagenum_t cur_num = header_page->root_page_num;
-  unpin(table_id, HEADER_PAGE_POS);
 
   // 루트 페이지가 존재하지 않으면
   if (cur_num == PAGE_NULL || header_page->num_of_pages == 1) {
+    unpin(table_id, HEADER_PAGE_POS);
     return PAGE_NULL;
   }
+  unpin(table_id, HEADER_PAGE_POS);
 
   // leaf를 찾을때까지 계속해서 읽어나감
   while (true) {
     page_t* page_buf = read_buffer(fd, table_id, cur_num);
-    page_header_t* page_header = (page_header_t*)&page_buf;
+    page_header_t* page_header = (page_header_t*)page_buf;
 
     uint32_t is_leaf = page_header->is_leaf;
 
@@ -338,7 +339,7 @@ pagenum_t find_leaf(int fd, tableid_t table_id, int64_t key) {
     }
 
     int index = 0;
-    internal_page_t* internal_page = (internal_page_t*)&page_buf;
+    internal_page_t* internal_page = (internal_page_t*)page_buf;
     while (index < internal_page->num_of_keys &&
            key >= internal_page->entries[index].key) {
       index++;
