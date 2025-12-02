@@ -116,7 +116,8 @@ int insert_into_leaf(int fd, tableid_t table_id, pagenum_t leaf_num,
  */
 record_t* prepare_records_for_split(leaf_page_t* leaf_page, int64_t key,
                                     const char* value) {
-  record_t* temp_records = (record_t*)malloc(RECORD_CNT * sizeof(record_t));
+  record_t* temp_records =
+      (record_t*)malloc((RECORD_CNT + 1) * sizeof(record_t));
   if (temp_records == NULL) {
     perror("Memory allocation for temporary records failed.");
     exit(EXIT_FAILURE);
@@ -246,7 +247,7 @@ int insert_into_node(int fd, tableid_t table_id, pagenum_t page_num,
 entry_t* prepare_entries_for_split(internal_page_t* old_node_page,
                                    int64_t left_index, int64_t key,
                                    pagenum_t right) {
-  entry_t* temp_entries = (entry_t*)malloc((ENTRY_CNT) * sizeof(entry_t));
+  entry_t* temp_entries = (entry_t*)malloc((ENTRY_CNT + 1) * sizeof(entry_t));
   if (temp_entries == NULL) {
     perror("Temporary entries array.");
     exit(EXIT_FAILURE);
@@ -322,7 +323,7 @@ int64_t distribute_entries_and_update_children(int fd, tableid_t table_id,
     child = new_node_page->entries[i].page_num;
     if (child != PAGE_NULL) {
       page_t* child_page = read_buffer(fd, table_id, child);
-      page_header_t* child_page_header = (page_header_t*)&child_page;
+      page_header_t* child_page_header = (page_header_t*)child_page;
       child_page_header->parent_page_num = new_node_num;
       write_buffer(table_id, child, child_page);
       unpin(table_id, child);
@@ -441,7 +442,7 @@ int insert_into_new_root(int fd, tableid_t table_id, pagenum_t left,
   unpin(table_id, left);
 
   page_t* right_page = read_buffer(fd, table_id, right);
-  page_header_t* right_header = (page_header_t*)&right_page;
+  page_header_t* right_header = (page_header_t*)right_page;
   right_header->parent_page_num = root;
   write_buffer(table_id, right, right_page);
   unpin(table_id, right);
