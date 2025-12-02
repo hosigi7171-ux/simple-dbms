@@ -14,7 +14,7 @@ int get_fd(tableid_t table_id) { return table_infos[table_id].fd; }
  */
 void free_buffer_manager(int end) {
   for (int index = 0; index < end; index++) {
-    free(&buf_mgr.frames[index].frame);
+    free(buf_mgr.frames[index].frame);
   }
   free(buf_mgr.frames);
 }
@@ -176,6 +176,21 @@ int close_table(int table_id) {
 }
 
 /**
+ * helper function for shutdown_db
+ */
+void clear_path_table_mapper() {
+  for (int i = 0; i <= MAX_TABLE_COUNT; ++i) {
+    buf_mgr.page_table[i].clear();
+  }
+  path_table_mapper.clear();
+  memset(table_infos, 0, sizeof(table_infos));
+
+  buf_mgr.frames = NULL;
+  buf_mgr.frames_size = 0;
+  buf_mgr.clock_hand = 0;
+}
+
+/**
  * @brief Flush all data from buffer and destroy allocated buffer
  • If success, return 0. Otherwise, return non-zero value
  */
@@ -191,7 +206,8 @@ int shutdown_db(void) {
     free_buffer_manager(buf_mgr.frames_size);
   }
 
-  buf_mgr.frames = NULL;
+  clear_path_table_mapper();
+
   return SUCCESS;
 }
 
