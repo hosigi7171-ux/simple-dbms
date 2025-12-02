@@ -64,6 +64,7 @@ int bpt_insert(int fd, tableid_t table_id, int64_t key, char* value) {
   header_page_t* header_page = (header_page_t*)read_header_page(fd, table_id);
 
   pagenum_t root_num = header_page->root_page_num;
+  unpin(table_id, HEADER_PAGE_POS);
   if (root_num == PAGE_NULL) {
     return start_new_tree(fd, table_id, key, value);
   }
@@ -78,6 +79,7 @@ int bpt_insert(int fd, tableid_t table_id, int64_t key, char* value) {
     return insert_into_leaf(fd, table_id, leaf, leaf_page, key, value);
   }
 
+  unpin(table_id, leaf);
   // Case:  leaf must be split.
   return insert_into_leaf_after_splitting(fd, table_id, leaf, key, value);
 }
