@@ -70,6 +70,8 @@ void pin_frame(frame_idx_t frame_idx);
 void unpin(tableid_t table_id, pagenum_t page_num);
 void unpin_frame(frame_idx_t frame_idx);
 
+void mark_dirty(tableid_t table_id, pagenum_t page_num);
+
 // clock algorithm
 void update_clock_hand(void);
 frame_idx_t find_free_frame_index(int fd, tableid_t table_id,

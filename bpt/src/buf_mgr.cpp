@@ -59,6 +59,25 @@ page_t* get_page_from_buffer(
  * 버퍼에서 페이지를 읽기
  */
 page_t* read_buffer(int fd, tableid_t table_id, pagenum_t page_num) {
+  // test
+  static int read_buffer_call_count = 0;
+  read_buffer_call_count++;
+
+#ifdef TEST_ENV
+  // if (read_buffer_call_count % 10 == 0) {
+  //   fprintf(stderr, "DEBUG: read_buffer called %d times (page_num=%lu)\n",
+  //           read_buffer_call_count, page_num);
+  // }
+
+  if (read_buffer_call_count > 10000) {
+    fprintf(stderr,
+            "ERROR: read_buffer called too many times (%d)! Possible infinite "
+            "loop.\n",
+            read_buffer_call_count);
+    fprintf(stderr, "Last page_num: %lu, table_id: %d\n", page_num, table_id);
+    exit(EXIT_FAILURE);
+  }
+#endif
   std::unordered_map<pagenum_t, frame_idx_t>& frame_mapper =
       buf_mgr.page_table[table_id];
 
@@ -87,6 +106,16 @@ void write_buffer(tableid_t table_id, pagenum_t page_num, page_t* page) {
 }
 
 header_page_t* read_header_page(int fd, tableid_t table_id) {
+#ifdef TEST_ENV
+  static int header_call_count = 0;
+  header_call_count++;
+
+  if (header_call_count > 10000) {
+    fprintf(stderr, "ERROR: read_header_page called too many times (%d)!\n",
+            header_call_count);
+    exit(EXIT_FAILURE);
+  }
+#endif
   page_t* header_page_buff = read_buffer(fd, table_id, HEADER_PAGE_POS);
   header_page_t* header_page_ptr = (header_page_t*)header_page_buff;
 
@@ -99,8 +128,12 @@ header_page_t* read_header_page(int fd, tableid_t table_id) {
 void prefetch(int fd, pagenum_t page_num, tableid_t table_id,
               frame_idx_t frame_idx,
               std::unordered_map<pagenum_t, frame_idx_t>& frame_mapper) {
+#ifdef TEST_ENV
+  return;
+#endif
   header_page_t* header_page_ptr = read_header_page(fd, table_id);
   int total_pages = header_page_ptr->num_of_pages;
+  unpin(table_id, HEADER_PAGE_POS);
 
   for (int index = 1; index <= PREFETCH_SIZE; index++) {
     pagenum_t prefetched_page_num = page_num + index;
@@ -159,6 +192,15 @@ void set_new_prefetched_bcb(tableid_t table_id, pagenum_t page_num,
  */
 frame_idx_t load_page_into_buffer(int fd, tableid_t table_id,
                                   pagenum_t page_num) {
+#ifdef TEST_ENV
+  static int load_count = 0;
+  load_count++;
+  if (load_count % 10 == 0) {
+    fprintf(stderr,
+            "DEBUG: load_page_into_buffer called %d times (page_num=%lu)\n",
+            load_count, page_num);
+  }
+#endif
   frame_idx_t frame_idx = find_free_frame_index(fd, table_id, page_num);
 
   page_t* frame_ptr = (page_t*)buf_mgr.frames[frame_idx].frame;
@@ -172,20 +214,52 @@ frame_idx_t load_page_into_buffer(int fd, tableid_t table_id,
 }
 
 /**
+ * @brief Mark the page in the buffer as dirty.
+ */
+void mark_dirty(tableid_t table_id, pagenum_t page_num) {
+  frame_idx_t frame_idx = get_frame_index_by_page(table_id, page_num);
+  if (frame_idx != INVALID_FRAME) {
+    buf_mgr.frames[frame_idx].is_dirty = true;
+  } else {
+    fprintf(stderr,
+            "WARNING: Attempted to mark unbuffered page %lu as dirty.\n",
+            page_num);
+  }
+}
+
+/**
  * 디스크에 페이지를 할당하고 버퍼에 올림
  * @return allocated_page_info_t = {page_t*, pagenum_t}
  */
 allocated_page_info_t make_and_pin_page(int fd, tableid_t table_id) {
-  pagenum_t page_num = file_alloc_page(fd);
-  if (page_num == PAGE_NULL) {
-    perror("Node creation.");
+  pagenum_t page_num;
+
+  header_page_t* header = read_header_page(fd, table_id);
+
+  if (header == NULL) {
+    perror("Failed to read header page in make_and_pin_page.");
     exit(EXIT_FAILURE);
   }
 
+  if (header->free_page_num != PAGE_NULL) {
+    // use free page list
+    page_num = header->free_page_num;
+    free_page_t* free_page = (free_page_t*)read_buffer(fd, table_id, page_num);
+    header->free_page_num = free_page->next_free_page_num;
+    unpin(table_id, page_num);
+  } else {
+    // allocate in order
+    page_num = header->num_of_pages;
+    header->num_of_pages += 1;
+  }
+
+  mark_dirty(table_id, HEADER_PAGE_POS);
+  unpin(table_id, HEADER_PAGE_POS);
+
   frame_idx_t frame_idx = find_free_frame_index(fd, table_id, page_num);
   page_t* frame_ptr = (page_t*)buf_mgr.frames[frame_idx].frame;
-  buf_mgr.page_table[table_id].insert(std::make_pair(page_num, frame_idx));
 
+  buf_mgr.page_table[table_id].insert(std::make_pair(page_num, frame_idx));
   set_new_bcb(table_id, page_num, frame_idx, frame_ptr);
 
   return {frame_ptr, page_num};
@@ -219,15 +293,31 @@ void clear_frame_and_page_table(tableid_t table_id, pagenum_t page_num,
 /**
  * 버퍼 내부의 해당하는 프레임을 제거하고 디스크 상에서 free까지 함
  * 호출시 추가로 unpin할 필요는 없음
+ * Header Page 업데이트 및 Free Page 링크 구성
  */
 void free_page_in_buffer(int fd, tableid_t table_id, pagenum_t page_num) {
+  header_page_t* header = read_header_page(fd, table_id);
+
+  if (header == NULL) {
+    perror("Failed to read header page in free_page_in_buffer.");
+    exit(EXIT_FAILURE);
+  }
+
+  free_page_t new_free_page;
+  memset(&new_free_page, 0, PAGE_SIZE);
+  new_free_page.next_free_page_num = header->free_page_num;
+
+  header->free_page_num = page_num;
+  mark_dirty(table_id, HEADER_PAGE_POS);
+  unpin(table_id, HEADER_PAGE_POS);
+
   frame_idx_t frame_idx = get_frame_index_by_page(table_id, page_num);
 
   if (frame_idx != INVALID_FRAME) {
     clear_frame_and_page_table(table_id, page_num, frame_idx);
   }
 
-  file_free_page(fd, page_num);
+  file_write_page(fd, page_num, (page_t*)&new_free_page);
 }
 
 /**
@@ -244,13 +334,65 @@ void update_clock_hand() {
  */
 frame_idx_t find_free_frame_index(int fd, tableid_t table_id,
                                   pagenum_t page_num) {
+#ifdef TEST_ENV
+  static int find_frame_call_count = 0;
+  find_frame_call_count++;
+
+  if (find_frame_call_count > 50000) {
+    fprintf(stderr,
+            "ERROR: find_free_frame_index called too many times (%d)!\n",
+            find_frame_call_count);
+    fprintf(stderr, "Requested for page_num=%lu, table_id=%d\n", page_num,
+            table_id);
+    fprintf(stderr, "Buffer size: %d\n", buf_mgr.frames_size);
+
+    // 프레임 상태 출력
+    int pinned_count = 0;
+    for (int i = 0; i < buf_mgr.frames_size; i++) {
+      if (buf_mgr.frames[i].pin_count > 0) {
+        pinned_count++;
+        fprintf(stderr,
+                "Frame[%d]: PINNED (pin_count=%d, page_num=%lu, table_id=%d)\n",
+                i, buf_mgr.frames[i].pin_count, buf_mgr.frames[i].page_num,
+                buf_mgr.frames[i].table_id);
+      }
+    }
+    fprintf(stderr, "Total pinned frames: %d / %d\n", pinned_count,
+            buf_mgr.frames_size);
+    exit(EXIT_FAILURE);
+  }
+#endif
+  int iterations = 0;
+  const int MAX_ITERATIONS =
+      buf_mgr.frames_size * 3;  // 일단 최대 3바퀴만 나중에 수정할지도?
+
   while (true) {
     buf_ctl_block_t* bcb = &buf_mgr.frames[buf_mgr.clock_hand];
+
+    if (iterations >= MAX_ITERATIONS) {
+      fprintf(stderr,
+              "ERROR: find_free_frame_index - all frames are pinned!\n");
+      fprintf(stderr, "Buffer size: %d, Iterations: %d\n", buf_mgr.frames_size,
+              iterations);
+
+      for (int i = 0; i < buf_mgr.frames_size; i++) {
+        fprintf(
+            stderr,
+            "Frame[%d]: pin_count=%d, ref_bit=%d, table_id=%d, page_num=%lu\n",
+            i, buf_mgr.frames[i].pin_count, buf_mgr.frames[i].ref_bit,
+            buf_mgr.frames[i].table_id, buf_mgr.frames[i].page_num);
+      }
+
+      exit(EXIT_FAILURE);
+    }
+    iterations++;
+
     // Case: if used, skip
     if (bcb->pin_count > 0) {
       update_clock_hand();
       continue;
     }
+
     // Case: if not used and not ref, found target
     if (!bcb->ref_bit) {
       // dirty page must be written

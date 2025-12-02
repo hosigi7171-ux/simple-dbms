@@ -19,47 +19,61 @@ void handle_error(const char* msg) {
 
 /**
  * @brief Allocate an on-disk page from the free page list
+ * not used
  */
 pagenum_t file_alloc_page(int fd) {
-  header_page_t header;
-  free_page_t free_page;
-  pagenum_t allocated_page_num;
+  // header_page_t header;
+  // free_page_t free_page;
+  // pagenum_t allocated_page_num;
 
-  file_read_page(fd, HEADER_PAGE_POS, (page_t*)&header);
-  allocated_page_num = header.free_page_num;
+  // file_read_page(fd, HEADER_PAGE_POS, (page_t*)&header);
+  // allocated_page_num = header.free_page_num;
 
-  if (allocated_page_num == PAGE_NULL) {
-    pagenum_t new_page_num = header.num_of_pages;
-    header.num_of_pages += 1;
-    file_write_page(fd, HEADER_PAGE_POS, (page_t*)&header);
+  // if (allocated_page_num == PAGE_NULL) {
+  //   pagenum_t new_page_num = header.num_of_pages;
+  //   header.num_of_pages += 1;
+  //   file_write_page(fd, HEADER_PAGE_POS, (page_t*)&header);
 
-    return new_page_num;
-  }
+  //   return new_page_num;
+  // }
 
-  file_read_page(fd, allocated_page_num, (page_t*)&free_page);
-  header.free_page_num = free_page.next_free_page_num;
-  file_write_page(fd, HEADER_PAGE_POS, (page_t*)&header);
+  // file_read_page(fd, allocated_page_num, (page_t*)&free_page);
+  // header.free_page_num = free_page.next_free_page_num;
+  // file_write_page(fd, HEADER_PAGE_POS, (page_t*)&header);
 
-  return allocated_page_num;
+  // return allocated_page_num;
+
+  // 이제 새 페이지의 할당은 버퍼 매니저가 인메모리로 처리
+  // 이후, write할때만 버퍼 매니적 알아서 처리한다
+  // 혹시 몰라서 주석으로 남겨둠
+  return PAGE_NULL;
 }
 
 /**
  * @brief Free an on-disk page to the free page list
  */
 void file_free_page(int fd, pagenum_t pagenum) {
-  header_page_t header;
-  page_t removing_page;
-  free_page_t new_free_page;
-  memset(&new_free_page, 0, PAGE_SIZE);
+  // header_page_t header;
+  // page_t removing_page;
+  // free_page_t new_free_page;
+  // memset(&new_free_page, 0, PAGE_SIZE);
 
-  // 헤더 페이지를 읽어와서 프리 페이지 리스트 참조
-  file_read_page(fd, HEADER_PAGE_POS, (page_t*)&header);
-  new_free_page.next_free_page_num = header.free_page_num;
-  header.free_page_num = pagenum;
+  // // 헤더 페이지를 읽어와서 프리 페이지 리스트 참조
+  // file_read_page(fd, HEADER_PAGE_POS, (page_t*)&header);
+  // new_free_page.next_free_page_num = header.free_page_num;
+  // header.free_page_num = pagenum;
 
-  // 삭제할 자리에 새로 작성할 프리 페이지 작성
-  file_write_page(fd, pagenum, (page_t*)&new_free_page);
-  file_write_page(fd, HEADER_PAGE_POS, (page_t*)&header);
+  // // 삭제할 자리에 새로 작성할 프리 페이지 작성
+  // file_write_page(fd, pagenum, (page_t*)&new_free_page);
+  // file_write_page(fd, HEADER_PAGE_POS, (page_t*)&header);
+
+  // 프리페이지 리스트에 추가하는 것은 버퍼 매니저에서 담당함
+  // 위에는 혹시 몰라서 남겨둔 주석
+
+  page_t empty_page;
+  memset(&empty_page, 0, PAGE_SIZE);
+
+  file_write_page(fd, pagenum, &empty_page);
 }
 
 /**

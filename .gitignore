@@ -13,6 +13,7 @@ bpt/build/test/runners/*
 file_test
 *.db
 library_test
+build/*
 
 # Executables
 main
