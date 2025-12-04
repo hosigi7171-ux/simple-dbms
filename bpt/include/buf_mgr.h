@@ -6,7 +6,7 @@
 #include "common_config.h"
 #include "page.h"
 
-#define PREFETCH_SIZE 4
+#define PREFETCH_SIZE 3
 #define INVALID_FRAME -1
 #define INVALID_TABLE_ID -1
 

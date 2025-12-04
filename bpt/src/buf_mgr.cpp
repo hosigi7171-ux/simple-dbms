@@ -1,5 +1,7 @@
 #include "buf_mgr.h"
 
+#include <db_api.h>
+
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -29,10 +31,6 @@ void flush_frame(int fd, tableid_t table_id, frame_idx_t frame_idx) {
   if (bcb->is_dirty && bcb->pin_count == 0) {
     file_write_page(fd, bcb->page_num, (page_t*)bcb->frame);
     bcb->is_dirty = false;
-    bcb->ref_bit = false;
-    bcb->frame = NULL;
-    bcb->page_num = 0;
-    bcb->table_id = 0;
   }
 }
 
@@ -98,9 +96,15 @@ page_t* read_buffer(int fd, tableid_t table_id, pagenum_t page_num) {
  * 버퍼에 페이지를 작성한다
  */
 void write_buffer(tableid_t table_id, pagenum_t page_num, page_t* page) {
-  frame_idx_t frame_idx = buf_mgr.page_table[table_id][page_num];
+  frame_idx_t frame_idx = get_frame_index_by_page(table_id, page_num);
+  if (frame_idx == INVALID_FRAME) {
+    fprintf(stderr,
+            "ERROR: write_buffer called on non-resident page %lu (table %d). ",
+            page_num, table_id);
+    return;
+  }
   buf_ctl_block_t* bcb = &buf_mgr.frames[frame_idx];
-  bcb->frame = page;
+  memcpy(bcb->frame, page, PAGE_SIZE);
   bcb->is_dirty = true;
   bcb->ref_bit = true;
 }
@@ -193,17 +197,18 @@ void set_new_prefetched_bcb(tableid_t table_id, pagenum_t page_num,
 frame_idx_t load_page_into_buffer(int fd, tableid_t table_id,
                                   pagenum_t page_num) {
 #ifdef TEST_ENV
-  static int load_count = 0;
-  load_count++;
-  if (load_count % 10 == 0) {
-    fprintf(stderr,
-            "DEBUG: load_page_into_buffer called %d times (page_num=%lu)\n",
-            load_count, page_num);
-  }
+  // static int load_count = 0;
+  // load_count++;
+  // if (load_count % 10 == 0) {
+  //   fprintf(stderr,
+  //           "DEBUG: load_page_into_buffer called %d times (page_num=%lu)\n",
+  //           load_count, page_num);
+  // }
 #endif
   frame_idx_t frame_idx = find_free_frame_index(fd, table_id, page_num);
 
   page_t* frame_ptr = (page_t*)buf_mgr.frames[frame_idx].frame;
+  memset(frame_ptr, 0, PAGE_SIZE);
   file_read_page(fd, page_num, frame_ptr);
 
   buf_mgr.page_table[table_id].insert(std::make_pair(page_num, frame_idx));
@@ -317,7 +322,7 @@ void free_page_in_buffer(int fd, tableid_t table_id, pagenum_t page_num) {
     clear_frame_and_page_table(table_id, page_num, frame_idx);
   }
 
-  file_write_page(fd, page_num, (page_t*)&new_free_page);
+  file_free_page(fd, page_num);
 }
 
 /**
@@ -367,8 +372,13 @@ frame_idx_t find_free_frame_index(int fd, tableid_t table_id,
       buf_mgr.frames_size * 3;  // 일단 최대 3바퀴만 나중에 수정할지도?
 
   while (true) {
+    frame_idx_t current_frame_idx = buf_mgr.clock_hand;
     buf_ctl_block_t* bcb = &buf_mgr.frames[buf_mgr.clock_hand];
-
+    // 헤더 페이지는 eviction 대상이 아님
+    if (bcb->page_num == HEADER_PAGE_POS && bcb->ref_bit) {
+      update_clock_hand();
+      continue;
+    }
     if (iterations >= MAX_ITERATIONS) {
       fprintf(stderr,
               "ERROR: find_free_frame_index - all frames are pinned!\n");
@@ -395,17 +405,47 @@ frame_idx_t find_free_frame_index(int fd, tableid_t table_id,
 
     // Case: if not used and not ref, found target
     if (!bcb->ref_bit) {
-      // dirty page must be written
+      tableid_t old_table_id = bcb->table_id;
+      pagenum_t old_page_num = bcb->page_num;
+
+#ifndef TEST_ENV
+      printf("EVICTION: frame_idx=%d, old_table_id=%d, old_page_num=%lu\n",
+             current_frame_idx, old_table_id, old_page_num);
+#endif
+
+      // write dirty page if needed
       if (bcb->is_dirty) {
-        file_write_page(fd, bcb->page_num, (page_t*)bcb->frame);
+        if (old_table_id >= 1 && old_table_id <= MAX_TABLE_COUNT &&
+            table_infos[old_table_id].fd > 0) {
+#ifndef TEST_ENV
+          printf("  -> Writing dirty page to disk\n");
+#endif
+          file_write_page(table_infos[old_table_id].fd, old_page_num,
+                          (page_t*)bcb->frame);
+        }
       }
 
-      // if other page already exists, eviction
-      if (bcb->page_num != 0) {
-        buf_mgr.page_table[bcb->table_id].erase(bcb->page_num);
+      // remove old page_table mapping
+      if (old_table_id >= 1 && old_table_id <= MAX_TABLE_COUNT) {
+        auto& page_map = buf_mgr.page_table[old_table_id];
+        auto it = page_map.find(old_page_num);
+
+        if (it != page_map.end() && it->second == current_frame_idx) {
+#ifndef TEST_ENV
+          printf("  -> Removing page_table[%d][%lu] (frame_idx=%d)\n",
+                 old_table_id, old_page_num, current_frame_idx);
+#endif
+          page_map.erase(it);
+        } else if (it != page_map.end()) {
+#ifndef TEST_ENV
+          printf(
+              "  -> WARNING: page_table[%d][%lu] points to frame %d, not %d\n",
+              old_table_id, old_page_num, it->second, current_frame_idx);
+#endif
+        }
       }
 
-      frame_idx_t target_idx = buf_mgr.clock_hand;
+      frame_idx_t target_idx = current_frame_idx;
       update_clock_hand();
       return target_idx;
     }

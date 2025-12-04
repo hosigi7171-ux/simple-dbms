@@ -121,7 +121,7 @@ int main(int argc, char** argv) {
 
       case 'q':
         while (getchar() != '\n');
-        if (current_table_id >= 0) {
+        if (current_table_id > 0) {
           close_table(current_table_id);
         }
         shutdown_db();

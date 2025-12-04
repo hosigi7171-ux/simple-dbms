@@ -35,15 +35,25 @@ int find(int fd, tableid_t table_id, int64_t key, char* result_buf) {
 
 /**
  * @brief init header page
+ * Case: there is no header page in disk
+ * write header frame in buffer
+ * must write header frame to disk later
  * must be used before insert
  */
 void init_header_page(int fd, tableid_t table_id) {
-  header_page_t* header_page =
-      (header_page_t*)read_buffer(fd, table_id, HEADER_PAGE_POS);
+  frame_idx_t header_frame_idx =
+      find_free_frame_index(fd, table_id, HEADER_PAGE_POS);
+  buf_ctl_block_t* bcb = &buf_mgr.frames[header_frame_idx];
+  page_t* frame_ptr = (page_t*)bcb->frame;
+
+  memset(frame_ptr, 0, PAGE_SIZE);
+
+  header_page_t* header_page = (header_page_t*)frame_ptr;
   header_page->num_of_pages = HEADER_PAGE_POS + 1;
 
+  buf_mgr.page_table[table_id].insert(
+      std::make_pair(HEADER_PAGE_POS, header_frame_idx));
   write_buffer(table_id, HEADER_PAGE_POS, (page_t*)header_page);
-  unpin(table_id, HEADER_PAGE_POS);
 }
 
 /* Master insertion function.

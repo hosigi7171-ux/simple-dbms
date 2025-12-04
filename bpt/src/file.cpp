@@ -53,20 +53,6 @@ pagenum_t file_alloc_page(int fd) {
  * @brief Free an on-disk page to the free page list
  */
 void file_free_page(int fd, pagenum_t pagenum) {
-  // header_page_t header;
-  // page_t removing_page;
-  // free_page_t new_free_page;
-  // memset(&new_free_page, 0, PAGE_SIZE);
-
-  // // 헤더 페이지를 읽어와서 프리 페이지 리스트 참조
-  // file_read_page(fd, HEADER_PAGE_POS, (page_t*)&header);
-  // new_free_page.next_free_page_num = header.free_page_num;
-  // header.free_page_num = pagenum;
-
-  // // 삭제할 자리에 새로 작성할 프리 페이지 작성
-  // file_write_page(fd, pagenum, (page_t*)&new_free_page);
-  // file_write_page(fd, HEADER_PAGE_POS, (page_t*)&header);
-
   // 프리페이지 리스트에 추가하는 것은 버퍼 매니저에서 담당함
   // 위에는 혹시 몰라서 남겨둔 주석
 
@@ -86,8 +72,14 @@ void file_read_page(int fd, pagenum_t pagenum, page_t* dest) {
     handle_error("lseek error");
   }
 
-  if (read(fd, dest, PAGE_SIZE) != PAGE_SIZE) {
-    handle_error("read error");
+  ssize_t bytes_read = read(fd, dest, PAGE_SIZE);
+
+  if (bytes_read == -1) {
+    handle_error("read error (I/O failure)");
+  } else if (bytes_read < PAGE_SIZE) {
+    fprintf(stderr, "EOF reached or partial read (%zd bytes) for page %d.\n",
+            bytes_read, pagenum);
+    exit(EXIT_FAILURE);
   }
 }
 

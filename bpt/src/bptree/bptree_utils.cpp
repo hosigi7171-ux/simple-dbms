@@ -124,6 +124,7 @@ void usage(void) {
       "  r <k1> <k2>    Print all keys and values in range [min(k1,k2) ... "
       "max(k1,k2)] (max range is 10000)\n");
   printf("  t              Print the entire B+ tree structure\n");
+  printf("  c              Close the table\n");
   printf("  q              Quit the program (closes the current table)\n");
   printf("  ?              Show this help message\n\n");
   printf("> ");
@@ -156,6 +157,9 @@ void enqueue(pagenum_t new_page_num, int level) {
  * tree out.  See print_tree.
  */
 queue* dequeue(void) {
+  if (q_head == NULL) {
+    return NULL;
+  }
   queue* next_node = q_head;
   q_head = q_head->next;
   next_node->next = NULL;

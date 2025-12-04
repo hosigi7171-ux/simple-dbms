@@ -19,6 +19,12 @@ void free_buffer_manager(int end) {
   free(buf_mgr.frames);
 }
 
+void init_table_infos() {
+  for (int index = 1; index <= MAX_TABLE_COUNT; index++) {
+    table_infos[index].fd = -1;
+  }
+}
+
 /**
  * helper function for init_db
  */
@@ -52,6 +58,7 @@ int init_db(int buf_num) {
     return FAILURE;
   }
 
+  init_table_infos();
   return init_buffer_manager(buf_num);
 }
 
@@ -62,7 +69,8 @@ int init_db(int buf_num) {
 int find_free_table() {
   tableid_t table_id = -1;
   for (int index = 1; index <= MAX_TABLE_COUNT; index++) {
-    if (table_infos[index].fd == 0) {
+    // fd가 -1이고 path도 비어있는 슬롯만 free
+    if (table_infos[index].fd == -1 && strlen(table_infos[index].path) == 0) {
       table_id = index;
       break;
     }
@@ -85,12 +93,29 @@ int open_table(char* pathname) {
     return FAILURE;
   }
 
-  // Case: already opened
+  // Check if this pathname was opened before
   if (path_table_mapper.count(pathname)) {
-    return path_table_mapper[pathname];
+    tableid_t table_id = path_table_mapper[pathname];
+
+    // 이미 열려있는지 확인 (fd가 유효한지)
+    if (table_infos[table_id].fd > 0) {
+      // already open
+      return table_id;
+    }
+
+    // 닫혀있으면 재오픈 (같은 table_id 재사용)
+    mode_t mode = 0644;
+    int fd = open(pathname, O_RDWR | O_CREAT, mode);
+    if (fd == -1) {
+      return FAILURE;
+    }
+
+    table_infos[table_id].fd = fd;
+
+    return table_id;
   }
 
-  // Case: open new one
+  // New pathname - allocate new table_id
   tableid_t table_id = find_free_table();
   if (table_id == FAILURE) {
     return FAILURE;
@@ -101,21 +126,20 @@ int open_table(char* pathname) {
     return FAILURE;
   }
 
-  // setup metadata (header_page)
-  struct stat stat_buf;
-  if (fstat(fd, &stat_buf) == -1) {
-    return FAILURE;
-  }
-  if (stat_buf.st_size == 0) {
-    init_header_page(get_fd(table_id), table_id);
-  }
-
-  // set table infos and mapper
   table_infos[table_id].fd = fd;
   strncpy(table_infos[table_id].path, pathname, PATH_NAME_MAX_LENGTH);
   table_infos[table_id].path[PATH_NAME_MAX_LENGTH] = '\0';
-
   path_table_mapper[pathname] = table_id;
+
+  // Setup metadata
+  struct stat stat_buf;
+  if (fstat(fd, &stat_buf) == -1) {
+    close(fd);
+    return FAILURE;
+  }
+  if (stat_buf.st_size == 0) {
+    init_header_page(fd, table_id);
+  }
 
   return table_id;
 }
@@ -159,17 +183,23 @@ int db_delete(int table_id, int64_t key) {
 }
 
 int close_table(int table_id) {
-  if (table_infos[table_id].fd < 0) {
-    printf("tabe not open\n");
+  if (table_id < 1 || table_id > MAX_TABLE_COUNT) {
+    printf("invalid table_id\n");
+    return FAILURE;
+  }
+
+  if (table_infos[table_id].fd <= 0) {
+    printf("table not open\n");
     return SUCCESS;
   }
 
+  flush_table_buffer(get_fd(table_id), table_id);
   int result = SUCCESS;
-
   if (close(table_infos[table_id].fd) == -1) {
     perror("cannot close fd");
     result = FAILURE;
   }
+  table_infos[table_id].fd = -1;
 
   printf("table closed\n");
   return result;

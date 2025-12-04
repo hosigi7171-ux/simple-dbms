@@ -63,6 +63,7 @@ pagenum_t adjust_root(int fd, tableid_t table_id, pagenum_t root) {
     new_root = PAGE_NULL;
   }
 
+  unpin(table_id, root);
   free_page_in_buffer(fd, table_id, root);
 
   // update header
@@ -70,6 +71,7 @@ pagenum_t adjust_root(int fd, tableid_t table_id, pagenum_t root) {
   header_page->root_page_num = new_root;
   write_buffer(table_id, HEADER_PAGE_POS, (page_t*)header_page);
   unpin(table_id, HEADER_PAGE_POS);
+  unpin(table_id, new_root);
 
   return SUCCESS;
 }
@@ -181,6 +183,7 @@ int coalesce_nodes(int fd, tableid_t table_id, pagenum_t target_num,
   write_buffer(table_id, neighbor_num, neighbor_buf);
   unpin(table_id, neighbor_num);
 
+  unpin(table_id, target_num);
   free_page_in_buffer(fd, table_id, target_num);
 
   // Remove the separator key from the parent
@@ -496,9 +499,6 @@ int find_neighbor_and_kprime(int fd, tableid_t table_id, pagenum_t target_node,
  * call
  */
 int handle_underflow(int fd, tableid_t table_id, pagenum_t target_node) {
-#ifdef TEST_ENV
-  fprintf(stderr, "handle underflow called!!!\n");
-#endif
   page_header_t* node_header =
       (page_header_t*)read_buffer(fd, table_id, target_node);
 
@@ -522,16 +522,10 @@ int handle_underflow(int fd, tableid_t table_id, pagenum_t target_node) {
   unpin(table_id, target_node);
   unpin(table_id, parent_num);
   if (neighbor_header->num_of_keys + node_header->num_of_keys < capacity) {
-#ifdef TEST_ENV
-    fprintf(stderr, "coalesce_nodes!!!\n");
-#endif
     unpin(table_id, neighbor_num);
     return coalesce_nodes(fd, table_id, target_node, neighbor_num,
                           kprime_index_from_get, k_prime);
   } else {
-#ifdef TEST_ENV
-    fprintf(stderr, "redistribute_nodes!!!\n");
-#endif
     unpin(table_id, neighbor_num);
     return redistribute_nodes(fd, table_id, target_node, neighbor_num,
                               kprime_index_from_get, k_prime_key_index,
@@ -578,10 +572,6 @@ int delete_entry(int fd, tableid_t table_id, pagenum_t target_node, int64_t key,
 
   // Case: Node stays at or above minimum. (The simple case)
   if (node_header->num_of_keys >= MIN_KEYS) {
-#ifdef TEST_ENV
-    fprintf(stderr, "have enough keys\n");
-    fprintf(stderr, "%d\n", RECORD_CNT);
-#endif
     return SUCCESS;
   }
 
@@ -607,7 +597,6 @@ void destroy_tree_nodes(int fd, tableid_t table_id, pagenum_t root_num) {
     }
   }
   unpin(table_id, root_num);
-
   free_page_in_buffer(fd, table_id, root_num);
 }
 
