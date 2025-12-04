@@ -132,9 +132,6 @@ header_page_t* read_header_page(int fd, tableid_t table_id) {
 void prefetch(int fd, pagenum_t page_num, tableid_t table_id,
               frame_idx_t frame_idx,
               std::unordered_map<pagenum_t, frame_idx_t>& frame_mapper) {
-#ifdef TEST_ENV
-  return;
-#endif
   header_page_t* header_page_ptr = read_header_page(fd, table_id);
   int total_pages = header_page_ptr->num_of_pages;
   unpin(table_id, HEADER_PAGE_POS);
@@ -408,7 +405,7 @@ frame_idx_t find_free_frame_index(int fd, tableid_t table_id,
       tableid_t old_table_id = bcb->table_id;
       pagenum_t old_page_num = bcb->page_num;
 
-#ifndef TEST_ENV
+#ifdef TEST_ENV
       printf("EVICTION: frame_idx=%d, old_table_id=%d, old_page_num=%lu\n",
              current_frame_idx, old_table_id, old_page_num);
 #endif
@@ -417,7 +414,7 @@ frame_idx_t find_free_frame_index(int fd, tableid_t table_id,
       if (bcb->is_dirty) {
         if (old_table_id >= 1 && old_table_id <= MAX_TABLE_COUNT &&
             table_infos[old_table_id].fd > 0) {
-#ifndef TEST_ENV
+#ifdef TEST_ENV
           printf("  -> Writing dirty page to disk\n");
 #endif
           file_write_page(table_infos[old_table_id].fd, old_page_num,
@@ -431,13 +428,13 @@ frame_idx_t find_free_frame_index(int fd, tableid_t table_id,
         auto it = page_map.find(old_page_num);
 
         if (it != page_map.end() && it->second == current_frame_idx) {
-#ifndef TEST_ENV
+#ifdef TEST_ENV
           printf("  -> Removing page_table[%d][%lu] (frame_idx=%d)\n",
                  old_table_id, old_page_num, current_frame_idx);
 #endif
           page_map.erase(it);
         } else if (it != page_map.end()) {
-#ifndef TEST_ENV
+#ifdef TEST_ENV
           printf(
               "  -> WARNING: page_table[%d][%lu] points to frame %d, not %d\n",
               old_table_id, old_page_num, it->second, current_frame_idx);

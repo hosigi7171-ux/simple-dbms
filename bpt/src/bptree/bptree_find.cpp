@@ -131,23 +131,22 @@ int height(int fd, tableid_t table_id, pagenum_t header_page_num) {
  * @brief bfs로 b+tree를 level 별로 탐색 및 출력
  */
 void print_tree(int fd, tableid_t table_id) {
-  // printf("=== PRINT_TREE DEBUG ===\n");
-  // printf("table_id: %d, fd: %d\n", table_id, fd);
-  // printf("table_info[%d].fd: %d\n", table_id, table_infos[table_id].fd);
-  // printf("table_info[%d].path: %s\n", table_id, table_infos[table_id].path);
+#ifdef TEST_ENV
+  printf("=== PRINT_TREE DEBUG ===\n");
+  printf("table_id: %d, fd: %d\n", table_id, fd);
+  printf("table_info[%d].fd: %d\n", table_id, table_infos[table_id].fd);
+  printf("table_info[%d].path: %s\n", table_id, table_infos[table_id].path);
 
-  // // page_table 내용 출력
-  // printf("page_table[%d] size: %lu\n", table_id,
-  //        buf_mgr.page_table[table_id].size());
-  // for (auto& p : buf_mgr.page_table[table_id]) {
-  //   printf(
-  //       "  pagenum=%lu -> frame_idx=%d (bcb.table_id=%d,
-  //       bcb.page_num=%lu)\n", p.first, p.second,
-  //       buf_mgr.frames[p.second].table_id,
-  //       buf_mgr.frames[p.second].page_num);
-  // }
-  // printf("========================\n");
-
+  // page_table 내용 출력
+  printf("page_table[%d] size: %lu\n", table_id,
+         buf_mgr.page_table[table_id].size());
+  for (auto& p : buf_mgr.page_table[table_id]) {
+    printf("pagenum=%lu -> frame_idx=%d (bcb.table_id=%d, bcb.page_num=%lu)\n",
+           p.first, p.second, buf_mgr.frames[p.second].table_id,
+           buf_mgr.frames[p.second].page_num);
+  }
+  printf("========================\n");
+#endif
   queue* now_node_ptr = NULL;
   int i = 0;
   int current_level = 0;
@@ -156,7 +155,6 @@ void print_tree(int fd, tableid_t table_id) {
   pagenum_t root = header->root_page_num;
   unpin(table_id, HEADER_PAGE_POS);
 
-  printf("root: %d , num of pages : %d\n", root, header->num_of_pages);
   if (root == PAGE_NULL) {
     printf("empty tree.\n");
     return;
