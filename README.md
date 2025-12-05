@@ -1,9 +1,9 @@
-# simple-dbms
-A simple, educational DBMS Storage Engine project.  
-The goal is to implement core database infrastructure layers:   
-File/Disk Management, Index Layer, Buffer Manager, and eventually, Concurrency Control and Table Locking. SQL parsing is intentionally excluded.
+# simple-dbms – Buffer Manager Implementation
 
-now, we are on buffer manager
+A minimal educational DBMS storage engine implementing multi-table support and an in-memory **buffer manager**.  
+This layer sits between the B+tree index layer and the file manager, acting as a cache to dramatically improve performance.
+
+Previous layers (disk-based B+tree) can be found in [README:disk based b+ tree](README_bptree.md).
 
 ---
 
@@ -13,7 +13,7 @@ now, we are on buffer manager
 이번 구현은 **DBMS**에서 **buffer management**를 구현합니다.  
 버퍼 계층은 전반적인 성능을 크게 향상시킵니다.
 
-이전 레이어의 구현은 [README:disk based b+ tree]()에서 볼 수 있습니다.  
+이전 레이어의 구현은 [README:disk based b+ tree](README_bptree.md)에서 볼 수 있습니다.  
   
 원래는 이 프로젝트의 이전 계층을 c로 구현했었지만, 버퍼 매니저를 구현하면서 cpp의 STL을 활용해야 하는 상황이 발생함에 따라 c언어 + STL 형태의 구조로 전환되었습니다.
 
@@ -67,7 +67,6 @@ Ubuntu 24.04.3 LTS (GNU/Linux 5.15.167.4-microsoft-standard-WSL2 x86_64)
 * table_id            : ID of the table(file) that this page belongs to
 * page_num            : Page number within the file
 * is_dirty            : Whether the page has been modified
-* is_pinned           : Whether the page is currently in use (prevents eviction)
 * (Any additional fields required for your design are allowed)
 
 ````
@@ -144,7 +143,9 @@ Ubuntu 24.04.3 LTS (GNU/Linux 5.15.167.4-microsoft-standard-WSL2 x86_64)
 - 다른 테이블이면 동일한 버퍼 프레임 공간에 접근할 수 없다.
 
 1번의 장점은 적은 버퍼 공간으로도 해결이 가능하다는 것입니다. 이것은 적은 RAM(메모리)로도 버퍼의 역할이 가능하다는 것을 의미합니다. 이는 현업에서의 관점이라면 저렴한 가격으로 직결됩니다. 하지만 단점은 여러 테이블이 공유하기 하나의 메모리 공간을 공유 가능하기 때문에 충돌이 일어날 수 있다는 것입니다. 또한 동시성 제어를 처리하기 번거로워집니다.  
+  
 2번의 장점은 구현이 쉽다는 것입니다. 테이블 별로 버퍼 공간을 분리하면 동일한 프레임 공간에 여러 테이블이 접근하는 것을 고려할 필요가 없습니다. 이는 동시성 제어에서 쉬운 난이도라는 이점을 얻을 것입니다. 하지만 큰 단점이 있는데, 테이블 별로 버퍼 메모리 공간을 분리한다면 그만큼 버퍼 공간에 대한 경제적인 비용이 많이 든다는 것입니다.  
+  
 저는 1번을 선택했습니다. 버퍼는 크면 클수록 성능 향상에 도움이 됩니다. 그러면 디스크만큼 큰 버퍼를 할당한다면 말그대로 인메모리 디스크도 가능하겠죠. 하지만 실제로 그렇게 하지 않습니다. 왜냐하면 버퍼를 위한 메모리는 비싸기 때문입니다. 그래서 이 프로젝트가 아무리 실제로 사용할 dbms를 구현하는 것이 아니더라도, 실제와 완전히 괴리감이 있게 버퍼 공간을 크게 잡기보다는 작게 유지하기로 했습니다.
 
 ---
