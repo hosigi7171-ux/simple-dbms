@@ -1,6 +1,6 @@
 /*
-g++ -g -I../include -o test_lock_table test_lock_table.cpp ../src/lock_table.cpp
--lpthread
+g++ -g -I../include -o unittest_lock_table unittest_lock_table.cpp
+../src/lock_table.cpp -lpthread
 */
 #include <pthread.h>
 #include <stdio.h>
