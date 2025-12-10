@@ -300,9 +300,9 @@ Mutex를 선택한 이유는 다음과 같습니다.
     따라서 잠금 순서를 고정했기 떄문에 데드락이 발생했을 가능성은 매우 적었습니다.  
     결국 원점으로 돌아가서 다시 스레드 backtrace를 출력한 상황을 검토하기로 했습니다. 문제 자체는 pthread_cond_wait를 중심으로 발생했었고, 이에 맞춰 pthread_cond_signal과 wait를 집중적으로 검토했습니다. 이러면 condition variable과 관련해서 뭔가 문제가 있는거 아닐까라는 추론에 도달하였습니다. 문제 상황에서 전역 테이블 래치와 전역 condition variable을 사용했었습니다. table latch가 전역인 것은 mutex 방식이기 떄문에 문제가 없다고 판단했고 condition variable이 전역일 필요가 있을까 싶어서 다시 한 번 고민해봤습니다. 그 결과 condition variable 관련한 문제임을 발견할 수 있었습니다.  
     원인은 전역 condition variable을 사용함에도 불구하고 pthread_cond_signal을 호출했다는 것입니다. pthread_cond_wait는 latch를 해제하고 조건 변수에 대한 신호가 올 때까지 기다립니다. 그리고 pthread_cond_signal은 해당 조건 변수에 대해 기다리는 임의의 스레드 하나를 깨웁니다. 깨워진 스레드는 다시 latch를 얻는 것을 시도합니다. 어쨌든 문제는 signal은 원하는 스레드 하나를 지정해서 깨우는 것이 아니라 동일한 조건 변수를 기다리는 스레드 하나를 깨운다는 것입니다. 이 부분을 착각해서 'release한 lock object의 next lock object가 당연히 깨어나겠지'라고 생각을 했었고 그 결과 의도치 않은 스레드에게 신호가 가서 결국엔 모든 스레드가 wait하는 상황이 발생헀던 것입니다. 그래서 이 부분을 해결하고자 했고 여러 방법을 생각해 봤습니다.  
-    1. pthread_cond_wait(전역조건변수) + pthread_broadcast  
+    1. **pthread_cond_wait(전역조건변수) + pthread_broadcast**  
     이 경우, 기존의 전역 조건 변수를 활용하던 코드는 유지해도 됩니다. 단지 signal 부분을 broadcast로 바꾸면 됩니다. pthread_broadcast는 주어진 조건 변수를 기다리는 모든 스레드를 깨우기 때문에 문제도 해결됩니다. 하지만 이는 타겟 스레드가 아니라 다른 스레드까지 불필요하게 signal을 보내기 때문에 다시 latch를 잡으려는 경쟁이 발생할 수 있습니다. 이는 다시 불필요한 cpu낭비와 context switching 문제가 발생할 수 있습니다. 
-    2. pthread_cond_wait(개별조건변수) + pthread_cond_signal
+    2. **pthread_cond_wait(개별조건변수) + pthread_cond_signal**  
     이 경우, 기존 문제를 해결함과 동시에 원하는 타겟 스레드를 깨울 수 있습니다. 단지 스레드를 구별할 condition variable이 존재하면 됩니다. 이러한 조건변수를 스레드가 아닌 스레드가 작업하는 lock object마다 조건 변수를 할당해서 결국엔 lock object를 통해서 타겟 스레드에 조건 변수 신호를 보내는 방법으로 구현했습니다.  
 
     결국엔 2번 방법을 통해 해결할 수 있었습니다.
