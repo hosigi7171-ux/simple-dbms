@@ -1,6 +1,7 @@
 # simple-dbms – Lock Table Implementation
 
-A minimal educational DBMS storage engine implementing **lock table**.  
+A minimal educational DBMS storage engine implementing a thread-safe **lock table**.  
+This project implements a record-level lock table that can safely operate in a multi-threaded environment.
 
 ---
 
@@ -100,7 +101,7 @@ lock object list에서 해당 락 오브젝트를 제거
 
 Lock Table은 여러 스레드가 동시에 접근하고 수정하는 공유 자료구조입니다. 이러한 임계 영역(Critical Section)을 보호하기 위해 동시성 제어 메커니즘인 Latch(Mutex)가 필요합니다.
 
-**Mutex(상호 배제)** 와 **Semaphore(세마포어)** 는 모두 임계 영역 보호에 사용될 수 있지만, Lock Table Latch로는 Mutex 방식이 더 적합하다고 판단했습니다.
+Mutex(상호 배제)와 Semaphore(세마포어)는 모두 임계 영역 보호에 사용될 수 있지만, Lock Table Latch로는 Mutex 방식이 더 적합하다고 판단했습니다.
 
 Mutex를 선택한 이유는 다음과 같습니다.  
 **단순한 상호 배제 보장**: Lock Table Latch의 주된 목적은 오직 하나의 스레드만이 Lock Table의 내부 자료구조(해시 테이블, 연결 리스트)를 조작할 수 있도록 보장하는 것입니다. Mutex는 이처럼 자원에 대한 소유권을 한 번에 하나만 허용하는, 가장 단순하고 효율적인 상호 배제 기능을 제공합니다.  
