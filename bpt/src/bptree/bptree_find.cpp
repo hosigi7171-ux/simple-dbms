@@ -380,3 +380,54 @@ pagenum_t find_leaf(int fd, tableid_t table_id, int64_t key) {
     unpin(table_id, num_to_unpin);
   }
 }
+
+/**
+ * find leaf with concurrency control
+ * page latch를 유지하고 bcb 포인터 반환
+ */
+pagenum_t find_leaf(int fd, tableid_t table_id, int64_t key, void** out_bcb) {
+  buf_ctl_block_t* header_bcb = read_header_page_with_txn(fd, table_id);
+  header_page_t* header_page = (header_page_t*)(header_bcb->frame);
+  pagenum_t cur_num = header_page->root_page_num;
+  pagenum_t num_of_pages = header_page->num_of_pages;
+
+  unpin_bcb(header_bcb);
+  pthread_mutex_unlock(&header_bcb->page_latch);
+
+  if (cur_num == PAGE_NULL || num_of_pages == 1) {
+    return PAGE_NULL;
+  }
+
+  // Latch crabbing
+  buf_ctl_block_t* cur_bcb = read_buffer_with_txn(fd, table_id, cur_num);
+  page_t* cur_page = (page_t*)(cur_bcb->frame);
+
+  while (true) {
+    page_header_t* hdr = (page_header_t*)cur_page;
+
+    if (hdr->is_leaf == LEAF) {
+      *out_bcb = cur_bcb;
+      return cur_num;  // leaf latch 유지
+    }
+
+    internal_page_t* ip = (internal_page_t*)cur_page;
+    pagenum_t next;
+    int i = 0;
+    while (i < ip->num_of_keys && key >= ip->entries[i].key) {
+      i++;
+    }
+
+    next = (i == 0) ? ip->one_more_page_num : ip->entries[i - 1].page_num;
+
+    // parent page_latch를 들고 있는 상태에서 child 획득
+    buf_ctl_block_t* child_bcb = read_buffer_with_txn(fd, table_id, next);
+
+    // child latch 획득 후 parent 해제
+    unpin_bcb(cur_bcb);
+    pthread_mutex_unlock(&cur_bcb->page_latch);
+
+    cur_num = next;
+    cur_bcb = child_bcb;
+    cur_page = (page_t*)(child_bcb->frame);
+  }
+}

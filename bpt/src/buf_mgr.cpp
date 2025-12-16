@@ -11,6 +11,8 @@
 
 buffer_manager_t buf_mgr = {0};  // temp buffer manager
 
+pthread_mutex_t buffer_manager_latch = PTHREAD_MUTEX_INITIALIZER;
+
 /**
  * flush buffer-----------------------------------------------------
  */
@@ -61,21 +63,6 @@ page_t* read_buffer(int fd, tableid_t table_id, pagenum_t page_num) {
   static int read_buffer_call_count = 0;
   read_buffer_call_count++;
 
-#ifdef TEST_ENV
-  // if (read_buffer_call_count % 10 == 0) {
-  //   fprintf(stderr, "DEBUG: read_buffer called %d times (page_num=%lu)\n",
-  //           read_buffer_call_count, page_num);
-  // }
-
-  if (read_buffer_call_count > 10000) {
-    fprintf(stderr,
-            "ERROR: read_buffer called too many times (%d)! Possible infinite "
-            "loop.\n",
-            read_buffer_call_count);
-    fprintf(stderr, "Last page_num: %lu, table_id: %d\n", page_num, table_id);
-    exit(EXIT_FAILURE);
-  }
-#endif
   std::unordered_map<pagenum_t, frame_idx_t>& frame_mapper =
       buf_mgr.page_table[table_id];
 
@@ -90,6 +77,42 @@ page_t* read_buffer(int fd, tableid_t table_id, pagenum_t page_num) {
   prefetch(fd, page_num, table_id, frame_idx, frame_mapper);
 
   return (page_t*)buf_mgr.frames[frame_idx].frame;
+}
+
+/**
+ * 버퍼에서 페이지를 읽기 with buffer manager latch
+ * return hold page latch
+ */
+buf_ctl_block_t* read_buffer_with_txn(int fd, tableid_t table_id,
+                                      pagenum_t page_num) {
+  buf_ctl_block_t* bcb = nullptr;
+
+  // buffer_manager_latch로 보호하면서 pin_count 증가
+  pthread_mutex_lock(&buffer_manager_latch);
+
+  std::unordered_map<pagenum_t, frame_idx_t>& frame_mapper =
+      buf_mgr.page_table[table_id];
+
+  if (frame_mapper.count(page_num)) {
+    frame_idx_t fidx = frame_mapper[page_num];
+    bcb = &buf_mgr.frames[fidx];
+    bcb->pin_count++;  // eviction 방지
+  } else {
+    frame_idx_t frame_idx = load_page_into_buffer(fd, table_id, page_num);
+    prefetch_with_txn(
+        fd, page_num, table_id, frame_idx, frame_mapper,
+        (header_page_t*)buf_mgr.frames[frame_mapper[HEADER_PAGE_POS]].frame);
+
+    frame_idx_t fidx = frame_mapper[page_num];
+    bcb = &buf_mgr.frames[fidx];
+    bcb->pin_count++;  // eviction 방지
+  }
+
+  pthread_mutex_unlock(&buffer_manager_latch);
+
+  pthread_mutex_lock(&bcb->page_latch);
+
+  return bcb;
 }
 
 /**
@@ -110,20 +133,17 @@ void write_buffer(tableid_t table_id, pagenum_t page_num, page_t* page) {
 }
 
 header_page_t* read_header_page(int fd, tableid_t table_id) {
-#ifdef TEST_ENV
-  static int header_call_count = 0;
-  header_call_count++;
-
-  if (header_call_count > 10000) {
-    fprintf(stderr, "ERROR: read_header_page called too many times (%d)!\n",
-            header_call_count);
-    exit(EXIT_FAILURE);
-  }
-#endif
   page_t* header_page_buff = read_buffer(fd, table_id, HEADER_PAGE_POS);
   header_page_t* header_page_ptr = (header_page_t*)header_page_buff;
 
   return header_page_ptr;
+}
+
+buf_ctl_block_t* read_header_page_with_txn(int fd, tableid_t table_id) {
+  buf_ctl_block_t* header_page_buff =
+      read_buffer_with_txn(fd, table_id, HEADER_PAGE_POS);
+
+  return header_page_buff;
 }
 
 /**
@@ -152,6 +172,42 @@ void prefetch(int fd, pagenum_t page_num, tableid_t table_id,
     // valid case
     frame_idx_t prefetched_index =
         find_free_frame_index(fd, table_id, page_num);
+
+    page_t* frame_ptr = (page_t*)buf_mgr.frames[prefetched_index].frame;
+    file_read_page(fd, prefetched_page_num, frame_ptr);
+    buf_mgr.page_table[table_id].insert(
+        std::make_pair(prefetched_page_num, prefetched_index));
+    set_new_prefetched_bcb(table_id, prefetched_page_num, prefetched_index,
+                           frame_ptr);
+  }
+}
+
+/**
+ * PREFETCH_SIZE만큼 더 페이지를 미리 버퍼에 가져오는 함수
+ */
+void prefetch_with_txn(int fd, pagenum_t page_num, tableid_t table_id,
+                       frame_idx_t frame_idx,
+                       std::unordered_map<pagenum_t, frame_idx_t>& frame_mapper,
+                       header_page_t* header_page_ptr) {
+  int total_pages = header_page_ptr->num_of_pages;
+  // unpin(table_id, HEADER_PAGE_POS);
+
+  for (int index = 1; index <= PREFETCH_SIZE; index++) {
+    pagenum_t prefetched_page_num = page_num + index;
+
+    // invalid
+    if (prefetched_page_num >= total_pages) {
+      break;
+    }
+
+    // if already exists in buffer
+    if (frame_mapper.count(prefetched_page_num)) {
+      continue;
+    }
+
+    // valid case
+    frame_idx_t prefetched_index =
+        find_free_frame_index(fd, table_id, prefetched_page_num);
 
     page_t* frame_ptr = (page_t*)buf_mgr.frames[prefetched_index].frame;
     file_read_page(fd, prefetched_page_num, frame_ptr);
@@ -193,15 +249,6 @@ void set_new_prefetched_bcb(tableid_t table_id, pagenum_t page_num,
  */
 frame_idx_t load_page_into_buffer(int fd, tableid_t table_id,
                                   pagenum_t page_num) {
-#ifdef TEST_ENV
-  // static int load_count = 0;
-  // load_count++;
-  // if (load_count % 10 == 0) {
-  //   fprintf(stderr,
-  //           "DEBUG: load_page_into_buffer called %d times (page_num=%lu)\n",
-  //           load_count, page_num);
-  // }
-#endif
   frame_idx_t frame_idx = find_free_frame_index(fd, table_id, page_num);
 
   page_t* frame_ptr = (page_t*)buf_mgr.frames[frame_idx].frame;
@@ -473,21 +520,30 @@ void pin_frame(frame_idx_t frame_idx) {
   bcb->ref_bit = true;
 }
 
+/**
+ * unpin
+ */
 void unpin(tableid_t table_id, pagenum_t page_num) {
   auto it = buf_mgr.page_table[table_id].find(page_num);
 
   if (it != buf_mgr.page_table[table_id].end()) {
     frame_idx_t frame_idx = it->second;
-    unpin_frame(frame_idx);
+    buf_ctl_block_t* bcb = &buf_mgr.frames[frame_idx];
+
+    int next_pin_count = bcb->pin_count - 1;
+    if (next_pin_count < 0) {
+      next_pin_count = 0;
+    }
+    bcb->pin_count = next_pin_count;
   }
 }
 
-void unpin_frame(frame_idx_t frame_idx) {
-  buf_ctl_block_t* bcb = &buf_mgr.frames[frame_idx];
-
+void unpin_bcb(buf_ctl_block_t* bcb) {
+  pthread_mutex_lock(&buffer_manager_latch);
   int next_pin_count = bcb->pin_count - 1;
   if (next_pin_count < 0) {
     next_pin_count = 0;
   }
   bcb->pin_count = next_pin_count;
+  pthread_mutex_unlock(&buffer_manager_latch);
 }

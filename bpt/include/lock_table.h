@@ -7,21 +7,14 @@
 #include <functional>
 #include <unordered_map>
 
-// 이건 나중에 merge시 라이브러리 교체 필요
-#define SUCCESS (0)
-#define FAILURE (-1)
-
-enum LockMode { S_LOCK = 0, X_LOCK = 1 };
-
-typedef int tableid_t;
-typedef int64_t recordid_t;
+#include "common_config.h"
 
 struct sentinel_t;
 struct hashkey_t;
 struct tcb_t;
 
 typedef struct hashkey_t {
-    tableid_t tableid;
+  tableid_t tableid;
   recordid_t recordid;
 
   bool operator==(const hashkey_t& other) const {
@@ -64,9 +57,11 @@ extern pthread_mutex_t lock_table_latch;
  */
 
 int init_lock_table();
-lock_t* lock_acquire(int table_id, int64_t key, int txn_id, int lock_mode);
+LockState lock_acquire(tableid_t table_id, recordid_t key, txnid_t txn_id,
+                       LockMode lock_mode, lock_t** ret_lock);
 int lock_release(lock_t* lock_obj);
-
+void lock_wait(lock_t* lock_obj);
 void try_grant_waiters_on_record(hashkey_t hashkey);
+void remove_lock_from_queue(lock_t* lock_obj, sentinel_t* sentinel);
 
 #endif

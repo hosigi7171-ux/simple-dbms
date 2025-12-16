@@ -9,13 +9,14 @@ LDFLAGS =
 # --- 파일 목록 정의 ---
 # 1. 모든 소스 파일 목록
 SRCS_BPTREE = $(wildcard $(SRCDIR)/bptree/*.cpp)
+SRCS_TXNMGR = $(wildcard $(SRCDIR)/txn_mgr/*.cpp)
 SRCS_ROOT = $(wildcard $(SRCDIR)/*.cpp)
 
 # main.cpp는 라이브러리에 포함되지 않도록 분리
 TARGET_SRC = $(SRCDIR)/main.cpp
 
 # 라이브러리 소스 목록 (main.cpp 제외)
-SRCS_FOR_LIB = $(filter-out $(TARGET_SRC), $(SRCS_ROOT)) $(SRCS_BPTREE)
+SRCS_FOR_LIB = $(filter-out $(TARGET_SRC), $(SRCS_ROOT)) $(SRCS_BPTREE) $(SRCS_TXNMGR)
 
 # 오브젝트 파일 목록 (경로를 포함하여 중복 방지: src/main.o, src/bptree/bptree.o)
 OBJS_FOR_LIB = $(SRCS_FOR_LIB:.cpp=.o)

@@ -2,6 +2,8 @@
 
 #include "bpt.h"
 #include "buf_mgr.h"
+#include "lock_table.h"
+#include "txn_mgr.h"
 
 table_info_t table_infos[MAX_TABLE_COUNT + 1] = {0};
 std::unordered_map<std::string, tableid_t> path_table_mapper;
@@ -168,6 +170,42 @@ int db_find(int table_id, int64_t key, char* ret_val) {
     return SUCCESS;
   }
   return FAILURE;
+}
+
+// 새로운 transactional 버전 추가
+int db_find(int table_id, int64_t key, char* ret_val, int txn_id) {
+  int fd = get_fd(table_id);
+  if (fd < 0) {
+    txn_abort(txn_id);
+    return FAILURE;
+  }
+
+  int result = find_with_txn(fd, table_id, key, ret_val, txn_id);
+
+  if (result == FAILURE) {
+    txn_abort(txn_id);
+    return FAILURE;
+  }
+
+  return SUCCESS;
+}
+
+// 새로운 transactional update 추가
+int db_update(int table_id, int64_t key, char* values, int txn_id) {
+  int fd = get_fd(table_id);
+  if (fd < 0) {
+    txn_abort(txn_id);
+    return FAILURE;
+  }
+
+  int result = update_with_txn(fd, table_id, key, values, txn_id);
+
+  if (result == FAILURE) {
+    txn_abort(txn_id);
+    return FAILURE;
+  }
+
+  return SUCCESS;
 }
 
 /**

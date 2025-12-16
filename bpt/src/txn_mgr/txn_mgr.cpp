@@ -120,19 +120,31 @@ void release_txn_latch(tcb_t* tcb) { pthread_mutex_unlock(&tcb->latch); }
 int txn_commit(txnid_t txn_id) {
   tcb_t* tcb = nullptr;
 
-  // clean up transaction
   if (acquire_txn_latch_and_pop_txn(txn_id, &tcb) != 0) {
     return 0;
   }
-  lock_t* cur_lock = tcb->lock_head;
-  while (cur_lock != nullptr) {
-    lock_t* next_lock = cur_lock->txn_next_lock;
-    lock_release(cur_lock);
-    cur_lock = next_lock;
+
+  if (tcb->lock_head != nullptr) {
+    lock_t* cur_lock = tcb->lock_head;
+    tcb->lock_head = nullptr;
+    tcb->lock_tail = nullptr;
+    while (cur_lock) {
+      lock_t* next = cur_lock->txn_next_lock;
+      cur_lock->txn_next_lock = nullptr;
+      cur_lock->txn_prev_lock = nullptr;
+      lock_release(cur_lock);
+      cur_lock = next;
+    }
+  }
+
+  undo_log_t* log = tcb->undo_head;
+  tcb->undo_head = nullptr;  //
+  while (log) {
+    undo_log_t* next = log->prev;
+    free(log);
+    log = next;
   }
   release_txn_latch(tcb);
-
-  // clean up TCB
   pthread_mutex_destroy(&tcb->latch);
   pthread_cond_destroy(&tcb->cond);
   free(tcb);
@@ -149,18 +161,17 @@ void unlink_lock_from_queue(lock_t* lock) {
   if (!lock) {
     return;
   }
-  hashkey_t hashkey = lock->sentinel->hashkey;
-  sentinel_t* sentinel = lock_table[hashkey];
-  lock_t* head = sentinel->head;
+  sentinel_t* sentinel = lock->sentinel;
 
   if (lock->prev) {
     lock->prev->next = lock->next;
+  } else {
+    sentinel->head = lock->next;
   }
   if (lock->next) {
     lock->next->prev = lock->prev;
-  }
-  if (head == lock) {
-    sentinel->head = lock->next;
+  } else {
+    sentinel->tail = lock->prev;
   }
   lock->next = lock->prev = nullptr;
 }
@@ -178,6 +189,10 @@ bool has_granted_x(lock_t* head) {
   return false;
 }
 
+/**
+ * helper function for txn_abort
+ * undo all modifications
+ */
 void undo_transaction(tcb_t* tcb) {
   undo_log_t* log = tcb->undo_head;
 
@@ -191,7 +206,6 @@ void undo_transaction(tcb_t* tcb) {
   }
 
   tcb->undo_head = nullptr;
-  release_txn_latch(tcb);
 }
 
 /**
@@ -207,11 +221,13 @@ void release_all_locks(tcb_t* txn_entry,
     touched_records.push_back(cur->sentinel->hashkey);
 
     unlink_lock_from_queue(cur);
+    pthread_cond_destroy(&cur->cond);
     free(cur);
 
     cur = next;
   }
   txn_entry->lock_head = nullptr;
+  txn_entry->lock_tail = nullptr;
 }
 
 /**
@@ -227,10 +243,14 @@ void wakeup_waiters_in_records(const std::vector<hashkey_t>& records) {
   }
 }
 
+/**
+ * abort transaction
+ * This function is called both by db_api and deadlock
+ */
 void txn_abort(txnid_t victim) {
   tcb_t* txn_entry = nullptr;
 
-  // get tcb
+  // get tcb and remove from table immediately
   pthread_mutex_lock(&txn_table.latch);
   auto it = txn_table.transactions.find(victim);
   if (it == txn_table.transactions.end()) {
@@ -239,6 +259,7 @@ void txn_abort(txnid_t victim) {
   }
 
   txn_entry = it->second;
+  txn_table.transactions.erase(victim);
   pthread_mutex_lock(&txn_entry->latch);
   pthread_mutex_unlock(&txn_table.latch);
 
@@ -255,18 +276,16 @@ void txn_abort(txnid_t victim) {
   // remove wait-for edges
   remove_wait_for_edges_for_txn(victim);
 
-  pthread_mutex_unlock(&txn_entry->latch);
-
   // wake up waiters
   wakeup_waiters_in_records(touched_records);
 
-  // remove txn entry
-  pthread_mutex_lock(&txn_table.latch);
-  txn_table.transactions.erase(victim);
+  // clean up TCB
+  release_txn_latch(txn_entry);
+  pthread_mutex_destroy(&txn_entry->latch);
+  pthread_cond_destroy(&txn_entry->cond);
   free(txn_entry);
-  pthread_mutex_unlock(&txn_table.latch);
 
-  printf("txn_abort: transaction %d aborted\n", victim);  // for test
+  printf("txn_abort: transaction %d aborted\n", victim);
 }
 
 /**
@@ -283,24 +302,4 @@ void link_lock_to_txn(tcb_t* txn, lock_t* lock) {
     txn->lock_head = lock;
   }
   txn->lock_tail = lock;
-}
-
-/**
- * transaction acquire lock
- * used in other layers
- */
-lock_t* txn_lock_acquire(tableid_t table_id, recordid_t rid, LockMode mode,
-                         txnid_t tid) {
-  tcb_t* tcb;
-  if (acquire_txn_latch(tid, &tcb) != 0) {
-    return nullptr;
-  }
-
-  lock_t* lock = lock_acquire(table_id, rid, mode, tid);
-  if (lock && lock->granted) {
-    link_lock_to_txn(tcb, lock);
-  }
-
-  release_txn_latch(tcb);
-  return lock;
 }

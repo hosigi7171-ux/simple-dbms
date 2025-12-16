@@ -150,7 +150,8 @@ txnid_t select_victim_from_cycle(const std::vector<txnid_t>& cycle) {
     tcb_t* tcb = it->second;
 
     pthread_mutex_lock(&tcb->latch);
-    pthread_mutex_unlock(&txn_table.latch);
+    // pthread_mutex_unlock(&txn_table.latch); table unlock할 필요가 없는듯?일단
+    // 보류
 
     int s_count = 0;
     bool has_x = false;
@@ -166,7 +167,7 @@ txnid_t select_victim_from_cycle(const std::vector<txnid_t>& cycle) {
     cand.push_back({tid, s_count, !has_x});
 
     pthread_mutex_unlock(&tcb->latch);
-    pthread_mutex_lock(&txn_table.latch);
+    // pthread_mutex_lock(&txn_table.latch);
   }
 
   pthread_mutex_unlock(&txn_table.latch);

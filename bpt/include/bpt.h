@@ -71,9 +71,12 @@ int find_range(int fd, tableid_t table_id, int64_t key_start, int64_t key_end,
                int64_t returned_keys[], pagenum_t returned_pages[],
                int returned_indices[]);
 pagenum_t find_leaf(int fd, tableid_t table_id, int64_t key);
+pagenum_t find_leaf(int fd, tableid_t table_id, int64_t key, void** out_bcb);
 int find(int fd, tableid_t table_id, int64_t key, char* result_buf);
 int cut(int length);
 void copy_value(char* dest, const char* src, size_t size);
+int find_with_txn(int fd, tableid_t table_id, int64_t key, char* ret_val,
+                  int txn_id);
 
 // Insertion
 pagenum_t make_node(int fd, tableid_t table_id, uint32_t isleaf);
@@ -116,4 +119,8 @@ int bpt_delete(int fd, tableid_t table_id, int64_t key);
 void destroy_tree_nodes(int fd, tableid_t table_id, pagenum_t root);
 void destroy_tree(int fd, tableid_t table_id);
 
+// Update
+int bpt_update(int fd, tableid_t table_id, int64_t key, char* new_value);
+int update_with_txn(int fd, tableid_t table_id, int64_t key, char* new_value,
+                    int txn_id);
 #endif /* __BPT_H__*/

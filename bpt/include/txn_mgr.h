@@ -9,7 +9,6 @@
 
 #include "common_config.h"
 
-typedef int txnid_t;
 struct tcb_t;
 struct txn_table_t;
 struct sentinel_t;
@@ -38,7 +37,7 @@ typedef struct tcb_t {
   undo_log_t* undo_head;
 } tcb_t;  // Transaction Control Block
 
-typedef struct {
+typedef struct txn_table_t {
   std::unordered_map<txnid_t, tcb_t*> transactions;
   pthread_mutex_t latch;
 } txn_table_t;

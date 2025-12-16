@@ -2,6 +2,8 @@
 #include "bpt_internal.h"
 #include "buf_mgr.h"
 #include "file.h"
+#include "lock_table.h"
+#include "txn_mgr.h"
 
 /* Finds and returns success(0) or fail(-1)
  */
@@ -111,4 +113,172 @@ int bpt_delete(int fd, tableid_t table_id, int64_t key) {
     return delete_entry(fd, table_id, leaf, key, value_buf);
   }
   return FAILURE;
+}
+
+/**
+ * update bptree value to input value
+ */
+int bpt_update(int fd, tableid_t table_id, int64_t key, char* new_value) {
+  pagenum_t leaf = find_leaf(fd, table_id, key);
+  if (leaf == PAGE_NULL) {
+    return FAILURE;
+  }
+
+  leaf_page_t* leaf_page = (leaf_page_t*)read_buffer(fd, table_id, leaf);
+
+  for (int i = 0; i < leaf_page->num_of_keys; i++) {
+    if (leaf_page->records[i].key == key) {
+      copy_value(leaf_page->records[i].value, new_value, VALUE_SIZE);
+      mark_dirty(table_id, leaf);
+      unpin(table_id, leaf);
+      return SUCCESS;
+    }
+  }
+
+  unpin(table_id, leaf);
+  return FAILURE;
+}
+
+/**
+ * find with concurrency control
+ */
+int find_with_txn(int fd, tableid_t table_id, int64_t key, char* ret_val,
+                  int txn_id) {
+  while (true) {
+    // find leaf with page latch
+    buf_ctl_block_t* leaf_bcb;
+    pagenum_t leaf = find_leaf(fd, table_id, key, (void**)&leaf_bcb);
+
+    if (leaf == PAGE_NULL) {
+      return FAILURE;
+    }
+
+    leaf_page_t* leaf_page = (leaf_page_t*)leaf_bcb->frame;
+
+    // find record
+    int found_idx = -1;
+    for (int i = 0; i < leaf_page->num_of_keys; i++) {
+      if (leaf_page->records[i].key == key) {
+        found_idx = i;
+        break;
+      }
+    }
+
+    if (found_idx == -1) {
+      unpin_bcb(leaf_bcb);
+      pthread_mutex_unlock(&leaf_bcb->page_latch);
+      return FAILURE;
+    }
+
+    // read value
+    copy_value(ret_val, leaf_page->records[found_idx].value, VALUE_SIZE);
+
+    // acquire lock while holding page latch
+    lock_t* lock = nullptr;
+    LockState lock_result = lock_acquire(table_id, key, txn_id, S_LOCK, &lock);
+
+    if (lock_result == ACQUIRED) {
+      // lock acquired immediately
+      unpin_bcb(leaf_bcb);
+      pthread_mutex_unlock(&leaf_bcb->page_latch);
+
+      // link lock to transaction
+      tcb_t* tcb;
+      if (acquire_txn_latch(txn_id, &tcb) == SUCCESS) {
+        link_lock_to_txn(tcb, lock);
+        release_txn_latch(tcb);
+      }
+
+      return SUCCESS;
+    } else if (lock_result == NEED_TO_WAIT) {
+      // must wait, release page latch
+      unpin_bcb(leaf_bcb);
+      pthread_mutex_unlock(&leaf_bcb->page_latch);
+
+      // sleep
+      lock_wait(lock);
+
+      // woke up - link lock and release transaction latch
+      tcb_t* tcb = nullptr;
+      pthread_mutex_lock(&txn_table.latch);
+      if (txn_table.transactions.count(txn_id)) {
+        tcb = txn_table.transactions[txn_id];
+        link_lock_to_txn(tcb, lock);
+        pthread_mutex_unlock(&tcb->latch);
+      }
+      pthread_mutex_unlock(&txn_table.latch);
+      continue;
+    } else {  // DEADLOCK
+      unpin_bcb(leaf_bcb);
+      pthread_mutex_unlock(&leaf_bcb->page_latch);
+      return FAILURE;
+    }
+  }
+}
+/**
+ * update with concurrency control
+ */
+int update_with_txn(int fd, tableid_t table_id, int64_t key, char* new_value,
+                    int txn_id) {
+  while (true) {
+    buf_ctl_block_t* leaf_bcb;
+    if (find_leaf(fd, table_id, key, (void**)&leaf_bcb) == PAGE_NULL) {
+      return FAILURE;
+    }
+
+    leaf_page_t* leaf = (leaf_page_t*)leaf_bcb->frame;
+
+    int idx = -1;
+    for (int i = 0; i < leaf->num_of_keys; i++) {
+      if (leaf->records[i].key == key) {
+        idx = i;
+        break;
+      }
+    }
+
+    if (idx == -1) {
+      unpin_bcb(leaf_bcb);
+      pthread_mutex_unlock(&leaf_bcb->page_latch);
+      return FAILURE;
+    }
+
+    char old_value[VALUE_SIZE];
+    memcpy(old_value, leaf->records[idx].value, VALUE_SIZE);
+
+    lock_t* lock;
+    LockState st = lock_acquire(table_id, key, txn_id, X_LOCK, &lock);
+
+    if (st == ACQUIRED) {
+      memcpy(leaf->records[idx].value, new_value, VALUE_SIZE);
+      leaf_bcb->is_dirty = true;
+
+      unpin_bcb(leaf_bcb);
+      pthread_mutex_unlock(&leaf_bcb->page_latch);
+
+      tcb_t* tcb;
+      if (acquire_txn_latch(txn_id, &tcb) == SUCCESS) {
+        undo_log_t* log = (undo_log_t*)malloc(sizeof(undo_log_t));
+        log->fd = fd;
+        log->table_id = table_id;
+        log->key = key;
+        memcpy(log->old_value, old_value, VALUE_SIZE);
+        log->prev = tcb->undo_head;
+        tcb->undo_head = log;
+
+        link_lock_to_txn(tcb, lock);
+        release_txn_latch(tcb);
+      }
+      return SUCCESS;
+    }
+
+    unpin_bcb(leaf_bcb);
+    pthread_mutex_unlock(&leaf_bcb->page_latch);
+
+    if (st == NEED_TO_WAIT) {
+      lock_wait(lock);
+      continue;
+    }
+
+    return FAILURE;  // DEADLOCK
+  }
 }
