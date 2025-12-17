@@ -42,6 +42,12 @@ int init_buffer_manager(int buf_num) {
   for (int index = 0; index < buf_num; index++) {
     memset(&buf_mgr.frames[index], 0, sizeof(buf_ctl_block_t));
 
+    // 페이지 래치 초기화
+    if (pthread_mutex_init(&buf_mgr.frames[index].page_latch, NULL) != 0) {
+      free_buffer_manager(index);
+      return FAILURE;
+    }
+
     buf_mgr.frames[index].frame = malloc(PAGE_SIZE);
     if (buf_mgr.frames[index].frame == NULL) {
       free_buffer_manager(index);
@@ -61,6 +67,7 @@ int init_db(int buf_num) {
   }
 
   init_table_infos();
+  init_txn_table();
   return init_buffer_manager(buf_num);
 }
 
@@ -273,6 +280,8 @@ int shutdown_db(void) {
   if (buf_mgr.frames != NULL) {
     free_buffer_manager(buf_mgr.frames_size);
   }
+
+  destroy_txn_table();
 
   clear_path_table_mapper();
 

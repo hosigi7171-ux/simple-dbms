@@ -13,12 +13,18 @@ txnid_t next_id = 1;
 txn_table_t txn_table;
 
 /**
- * init table
- * if success return 0
+ * 트랜잭션 매니저 초기화
  */
 int init_txn_table() {
-  pthread_mutex_init(&txn_table.latch, nullptr);
-  return 0;
+  if (pthread_mutex_init(&txn_table.latch, NULL) != 0) {
+    return FAILURE;
+  }
+
+  pthread_mutex_lock(&txn_table.latch);
+  txn_table.transactions.clear();
+  pthread_mutex_unlock(&txn_table.latch);
+
+  return SUCCESS;
 }
 
 /**
@@ -28,19 +34,30 @@ int init_txn_table() {
 int destroy_txn_table() {
   pthread_mutex_lock(&txn_table.latch);
 
-  for (auto& pair : txn_table.transactions) {
-    tcb_t* tcb = pair.second;
-    pthread_mutex_destroy(&tcb->latch);
-    pthread_cond_destroy(&tcb->cond);
-    free(tcb);
+  for (auto it = txn_table.transactions.begin();
+       it != txn_table.transactions.end(); ++it) {
+    tcb_t* tcb = it->second;
+    if (tcb != nullptr) {
+      // TCB 내부의 뮤텍스와 조건 변수 파괴
+      pthread_mutex_destroy(&tcb->latch);
+      pthread_cond_destroy(&tcb->cond);
+
+      // 언두 로그 메모리 해제
+      undo_log_t* curr_log = tcb->undo_head;
+      while (curr_log != nullptr) {
+        undo_log_t* next_log = curr_log->prev;
+        free(curr_log);
+        curr_log = next_log;
+      }
+      free(tcb);
+    }
   }
-
   txn_table.transactions.clear();
-
   pthread_mutex_unlock(&txn_table.latch);
+
   pthread_mutex_destroy(&txn_table.latch);
 
-  return 0;
+  return SUCCESS;
 }
 
 /**
@@ -48,7 +65,7 @@ int destroy_txn_table() {
  * if success return txn_id otherwise 0
  */
 int txn_begin(void) {
-  tcb_t* tcb = (tcb_t*)malloc(sizeof(tcb_t));
+  tcb_t* tcb = (tcb_t*)calloc(1, sizeof(tcb_t));
   if (tcb == nullptr) {
     return 0;
   }
