@@ -253,15 +253,6 @@ LockState lock_acquire(tableid_t table_id, recordid_t key, txnid_t txn_id,
 
   sentinel_t* sentinel = lock_table[hashkey];
 
-  // 이미 이 txn이 lock 가지고 있으면 재사용
-  for (lock_t* p = sentinel->head; p != nullptr; p = p->next) {
-    if (p->owner_txn_id == txn_id) {
-      *ret_lock = p;
-      pthread_mutex_unlock(&lock_table_latch);
-      return ACQUIRED;
-    }
-  }
-
   // 새 lock 생성
   lock_t* lock_obj = create_lock_object(txn_id, lock_mode);
   lock_obj->sentinel = sentinel;
@@ -449,6 +440,10 @@ void try_grant_waiters_on_record(hashkey_t hashkey) {
         // printf("debug:  Signaled txn=%d\n", waiter_txn_id);
       }
       pthread_mutex_unlock(&txn_table.latch);
+    } else {
+      if (p->mode == X_LOCK) {
+        break;
+      }
     }
   }
 }
