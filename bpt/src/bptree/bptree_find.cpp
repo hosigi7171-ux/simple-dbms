@@ -391,15 +391,15 @@ pagenum_t find_leaf(int fd, tableid_t table_id, int64_t key, void** out_bcb) {
   pagenum_t cur_num = header_page->root_page_num;
   pagenum_t num_of_pages = header_page->num_of_pages;
 
-  unpin_bcb(header_bcb);
-  pthread_mutex_unlock(&header_bcb->page_latch);
-
   if (cur_num == PAGE_NULL || num_of_pages == 1) {
     return PAGE_NULL;
   }
 
   // Latch crabbing
   buf_ctl_block_t* cur_bcb = read_buffer_with_txn(fd, table_id, cur_num);
+  unpin_bcb(header_bcb);
+  pthread_mutex_unlock(&header_bcb->page_latch);
+
   page_t* cur_page = (page_t*)(cur_bcb->frame);
 
   while (true) {

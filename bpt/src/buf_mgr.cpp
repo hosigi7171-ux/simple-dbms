@@ -109,7 +109,6 @@ buf_ctl_block_t* read_buffer_with_txn(int fd, tableid_t table_id,
   }
 
   pthread_mutex_unlock(&buffer_manager_latch);
-
   pthread_mutex_lock(&bcb->page_latch);
 
   return bcb;
@@ -190,7 +189,6 @@ void prefetch_with_txn(int fd, pagenum_t page_num, tableid_t table_id,
                        std::unordered_map<pagenum_t, frame_idx_t>& frame_mapper,
                        header_page_t* header_page_ptr) {
   int total_pages = header_page_ptr->num_of_pages;
-  // unpin(table_id, HEADER_PAGE_POS);
 
   for (int index = 1; index <= PREFETCH_SIZE; index++) {
     pagenum_t prefetched_page_num = page_num + index;
@@ -539,11 +537,9 @@ void unpin(tableid_t table_id, pagenum_t page_num) {
 }
 
 void unpin_bcb(buf_ctl_block_t* bcb) {
-  pthread_mutex_lock(&buffer_manager_latch);
   int next_pin_count = bcb->pin_count - 1;
   if (next_pin_count < 0) {
     next_pin_count = 0;
   }
   bcb->pin_count = next_pin_count;
-  pthread_mutex_unlock(&buffer_manager_latch);
 }

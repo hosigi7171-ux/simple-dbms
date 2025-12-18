@@ -106,7 +106,7 @@ int acquire_txn_latch(txnid_t txn_id, tcb_t** out_tcb) {
 }
 
 /**
- * 원하는 transaction latch를 얻고 table에서 transaction 매핑 삭제
+ * 원하는 transaction table latch를 얻고 table에서 transaction 매핑 삭제
  * transaction 자체를 없앤 것은 아님
  * if success return 0 otherwise -1
  */
@@ -121,7 +121,6 @@ int acquire_txn_latch_and_pop_txn(txnid_t txn_id, tcb_t** out_tcb) {
 
   txn_table.transactions.erase(txn_id);
 
-  pthread_mutex_lock(&tcb->latch);
   pthread_mutex_unlock(&txn_table.latch);
 
   *out_tcb = tcb;
@@ -133,6 +132,7 @@ void release_txn_latch(tcb_t* tcb) { pthread_mutex_unlock(&tcb->latch); }
 /**
  * clean up transaction
  * if success return txn_id otherwise 0
+ * 이미 caller가 txn latch는 잡고 있는 상태
  */
 int txn_commit(txnid_t txn_id) {
   tcb_t* tcb = nullptr;

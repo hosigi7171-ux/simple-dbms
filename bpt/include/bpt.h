@@ -38,7 +38,7 @@
 #define LICENSE_CONDITIONS_END 625
 
 // TYPES.
-
+struct tcb_t;
 // GLOBALS.
 
 /* The queue is used to print the tree in
@@ -76,7 +76,7 @@ int find(int fd, tableid_t table_id, int64_t key, char* result_buf);
 int cut(int length);
 void copy_value(char* dest, const char* src, size_t size);
 int find_with_txn(int fd, tableid_t table_id, int64_t key, char* ret_val,
-                  int txn_id);
+                  int txn_id, tcb_t* tcb);
 
 // Insertion
 pagenum_t make_node(int fd, tableid_t table_id, uint32_t isleaf);
@@ -122,5 +122,5 @@ void destroy_tree(int fd, tableid_t table_id);
 // Update
 int bpt_update(int fd, tableid_t table_id, int64_t key, char* new_value);
 int update_with_txn(int fd, tableid_t table_id, int64_t key, char* new_value,
-                    int txn_id);
+                    int txn_id, tcb_t* tcb);
 #endif /* __BPT_H__*/

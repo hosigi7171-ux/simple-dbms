@@ -143,9 +143,8 @@ int bpt_update(int fd, tableid_t table_id, int64_t key, char* new_value) {
  * find with concurrency control
  */
 int find_with_txn(int fd, tableid_t table_id, int64_t key, char* ret_val,
-                  int txn_id) {
+                  int txn_id, tcb_t* tcb) {
   while (true) {
-    // find leaf with page latch
     buf_ctl_block_t* leaf_bcb;
     pagenum_t leaf = find_leaf(fd, table_id, key, (void**)&leaf_bcb);
 
@@ -155,7 +154,7 @@ int find_with_txn(int fd, tableid_t table_id, int64_t key, char* ret_val,
 
     leaf_page_t* leaf_page = (leaf_page_t*)leaf_bcb->frame;
 
-    // find record
+    // Find record index
     int found_idx = -1;
     for (int i = 0; i < leaf_page->num_of_keys; i++) {
       if (leaf_page->records[i].key == key) {
@@ -170,47 +169,54 @@ int find_with_txn(int fd, tableid_t table_id, int64_t key, char* ret_val,
       return FAILURE;
     }
 
-    // read value
-    copy_value(ret_val, leaf_page->records[found_idx].value, VALUE_SIZE);
+    unpin_bcb(leaf_bcb);
+    pthread_mutex_unlock(&leaf_bcb->page_latch);
 
-    // acquire lock while holding page latch
     lock_t* lock = nullptr;
-    LockState lock_result = lock_acquire(table_id, key, txn_id, S_LOCK, &lock);
+    LockState lock_result =
+        lock_acquire(table_id, key, txn_id, tcb, S_LOCK, &lock);
 
     if (lock_result == ACQUIRED) {
-      // lock acquired immediately
-      unpin_bcb(leaf_bcb);
-      pthread_mutex_unlock(&leaf_bcb->page_latch);
-
-      // link lock to transaction
-      tcb_t* tcb;
-      if (acquire_txn_latch(txn_id, &tcb) == SUCCESS) {
-        link_lock_to_txn(tcb, lock);
-        release_txn_latch(tcb);
+      buf_ctl_block_t* leaf_bcb_reacquired;
+      if (find_leaf(fd, table_id, key, (void**)&leaf_bcb_reacquired) ==
+          PAGE_NULL) {
+        return FAILURE;
       }
+
+      leaf_page_t* leaf_page_reacquired =
+          (leaf_page_t*)leaf_bcb_reacquired->frame;
+
+      // 다시 인덱스 찾기
+      int found_idx_reacquired = -1;
+      for (int i = 0; i < leaf_page_reacquired->num_of_keys; i++) {
+        if (leaf_page_reacquired->records[i].key == key) {
+          found_idx_reacquired = i;
+          break;
+        }
+      }
+
+      if (found_idx_reacquired == -1) {
+        unpin_bcb(leaf_bcb_reacquired);
+        pthread_mutex_unlock(&leaf_bcb_reacquired->page_latch);
+        return FAILURE;
+      }
+
+      copy_value(ret_val,
+                 leaf_page_reacquired->records[found_idx_reacquired].value,
+                 VALUE_SIZE);
+
+      unpin_bcb(leaf_bcb_reacquired);
+      pthread_mutex_unlock(&leaf_bcb_reacquired->page_latch);
 
       return SUCCESS;
-    } else if (lock_result == NEED_TO_WAIT) {
-      // must wait, release page latch
-      unpin_bcb(leaf_bcb);
-      pthread_mutex_unlock(&leaf_bcb->page_latch);
 
-      // sleep
+    } else if (lock_result == NEED_TO_WAIT) {
       lock_wait(lock);
 
-      // woke up - link lock and release transaction latch
-      tcb_t* tcb = nullptr;
-      pthread_mutex_lock(&txn_table.latch);
-      if (txn_table.transactions.count(txn_id)) {
-        tcb = txn_table.transactions[txn_id];
-        link_lock_to_txn(tcb, lock);
-        pthread_mutex_unlock(&tcb->latch);
-      }
-      pthread_mutex_unlock(&txn_table.latch);
+      // 깨어난 후 재시도
       continue;
+
     } else {  // DEADLOCK
-      unpin_bcb(leaf_bcb);
-      pthread_mutex_unlock(&leaf_bcb->page_latch);
       return FAILURE;
     }
   }
@@ -219,7 +225,7 @@ int find_with_txn(int fd, tableid_t table_id, int64_t key, char* ret_val,
  * update with concurrency control
  */
 int update_with_txn(int fd, tableid_t table_id, int64_t key, char* new_value,
-                    int txn_id) {
+                    int txn_id, tcb_t* tcb) {
   while (true) {
     buf_ctl_block_t* leaf_bcb;
     if (find_leaf(fd, table_id, key, (void**)&leaf_bcb) == PAGE_NULL) {
@@ -245,40 +251,65 @@ int update_with_txn(int fd, tableid_t table_id, int64_t key, char* new_value,
     char old_value[VALUE_SIZE];
     memcpy(old_value, leaf->records[idx].value, VALUE_SIZE);
 
-    lock_t* lock;
-    LockState st = lock_acquire(table_id, key, txn_id, X_LOCK, &lock);
-
-    if (st == ACQUIRED) {
-      memcpy(leaf->records[idx].value, new_value, VALUE_SIZE);
-      leaf_bcb->is_dirty = true;
-
-      unpin_bcb(leaf_bcb);
-      pthread_mutex_unlock(&leaf_bcb->page_latch);
-
-      tcb_t* tcb;
-      if (acquire_txn_latch(txn_id, &tcb) == SUCCESS) {
-        undo_log_t* log = (undo_log_t*)malloc(sizeof(undo_log_t));
-        log->fd = fd;
-        log->table_id = table_id;
-        log->key = key;
-        memcpy(log->old_value, old_value, VALUE_SIZE);
-        log->prev = tcb->undo_head;
-        tcb->undo_head = log;
-
-        link_lock_to_txn(tcb, lock);
-        release_txn_latch(tcb);
-      }
-      return SUCCESS;
-    }
-
     unpin_bcb(leaf_bcb);
     pthread_mutex_unlock(&leaf_bcb->page_latch);
 
+    lock_t* lock;
+    LockState st = lock_acquire(table_id, key, txn_id, tcb, X_LOCK, &lock);
+
+    if (st == ACQUIRED) {
+      // 페이지를 다시 찾아야
+      buf_ctl_block_t* leaf_bcb_reacquired;
+      if (find_leaf(fd, table_id, key, (void**)&leaf_bcb_reacquired) ==
+          PAGE_NULL) {
+        return FAILURE;
+      }
+
+      leaf_page_t* leaf_reacquired = (leaf_page_t*)leaf_bcb_reacquired->frame;
+
+      // 다시 인덱스 찾기
+      int idx_reacquired = -1;
+      for (int i = 0; i < leaf_reacquired->num_of_keys; i++) {
+        if (leaf_reacquired->records[i].key == key) {
+          idx_reacquired = i;
+          break;
+        }
+      }
+
+      if (idx_reacquired == -1) {
+        unpin_bcb(leaf_bcb_reacquired);
+        pthread_mutex_unlock(&leaf_bcb_reacquired->page_latch);
+        return FAILURE;
+      }
+
+      memcpy(leaf_reacquired->records[idx_reacquired].value, new_value,
+             VALUE_SIZE);
+      leaf_bcb_reacquired->is_dirty = true;
+
+      unpin_bcb(leaf_bcb_reacquired);
+      pthread_mutex_unlock(&leaf_bcb_reacquired->page_latch);
+
+      undo_log_t* log = (undo_log_t*)malloc(sizeof(undo_log_t));
+      log->fd = fd;
+      log->table_id = table_id;
+      log->key = key;
+      memcpy(log->old_value, old_value, VALUE_SIZE);
+      log->prev = tcb->undo_head;
+      tcb->undo_head = log;
+
+      return SUCCESS;
+    }
+
+    // Case: Wait
     if (st == NEED_TO_WAIT) {
       lock_wait(lock);
       continue;
     }
 
-    return FAILURE;  // DEADLOCK
+    if (st == DEADLOCK) {
+      return FAILURE;
+    }
+
+    return FAILURE;
   }
 }

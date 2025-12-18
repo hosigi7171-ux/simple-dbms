@@ -187,7 +187,11 @@ int db_find(int table_id, int64_t key, char* ret_val, int txn_id) {
     return FAILURE;
   }
 
-  int result = find_with_txn(fd, table_id, key, ret_val, txn_id);
+  pthread_mutex_lock(&txn_table.latch);
+  tcb_t* tcb = txn_table.transactions[txn_id];
+  pthread_mutex_unlock(&txn_table.latch);
+
+  int result = find_with_txn(fd, table_id, key, ret_val, txn_id, tcb);
 
   if (result == FAILURE) {
     txn_abort(txn_id);
@@ -205,7 +209,11 @@ int db_update(int table_id, int64_t key, char* values, int txn_id) {
     return FAILURE;
   }
 
-  int result = update_with_txn(fd, table_id, key, values, txn_id);
+  pthread_mutex_lock(&txn_table.latch);
+  tcb_t* tcb = txn_table.transactions[txn_id];
+  pthread_mutex_unlock(&txn_table.latch);
+
+  int result = update_with_txn(fd, table_id, key, values, txn_id, tcb);
 
   if (result == FAILURE) {
     txn_abort(txn_id);
