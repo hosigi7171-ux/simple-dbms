@@ -244,17 +244,20 @@ LockState prepare_for_wait(lock_t* lock_obj, sentinel_t* sentinel,
 LockState lock_acquire(tableid_t table_id, recordid_t key, txnid_t txn_id,
                        tcb_t* owner_tcb, LockMode lock_mode,
                        lock_t** ret_lock) {
+  pthread_mutex_lock(&lock_table_latch);
+
   // 이미 락을 가지고 있는지
   for (lock_t* curr = owner_tcb->lock_head; curr != nullptr;
        curr = curr->txn_next_lock) {
     if (curr->sentinel && curr->sentinel->hashkey.tableid == table_id &&
-        curr->sentinel->hashkey.recordid == key && curr->granted) {
+        curr->sentinel->hashkey.recordid == key && curr->granted &&
+        curr->mode == lock_mode) {
       *ret_lock = curr;
+      pthread_mutex_unlock(&lock_table_latch);
       return ACQUIRED;
     }
   }
 
-  pthread_mutex_lock(&lock_table_latch);
   hashkey_t hashkey = {table_id, key};
 
   // 락 오브젝트 생성 및 TCB 연결
