@@ -3,6 +3,7 @@
 
 #include <pthread.h>
 
+#include <set>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -13,6 +14,13 @@ struct tcb_t;
 struct txn_table_t;
 struct sentinel_t;
 struct lock_t;
+
+typedef enum {
+  TXN_ACTIVE = 0,
+  TXN_COMMITTING = 1,
+  TXN_ABORTING = 2,
+  TXN_ABORTED = 3
+} txn_state_t;
 
 typedef struct victim_cand_t {
   txnid_t tid;
@@ -35,6 +43,7 @@ typedef struct tcb_t {
   lock_t* lock_head;
   lock_t* lock_tail;
   undo_log_t* undo_head;
+  txn_state_t state;
 } tcb_t;  // Transaction Control Block
 
 typedef struct txn_table_t {
@@ -44,7 +53,7 @@ typedef struct txn_table_t {
 
 extern txn_table_t txn_table;
 extern pthread_mutex_t wait_for_graph_latch;
-extern std::unordered_map<txnid_t, std::unordered_set<txnid_t>> wait_for_graph;
+extern std::unordered_map<txnid_t, std::multiset<txnid_t>> wait_for_graph;
 
 int init_txn_table();
 int destroy_txn_table();
@@ -61,6 +70,7 @@ lock_t* txn_lock_acquire(tableid_t table_id, recordid_t rid, LockMode mode,
                          txnid_t tid);
 
 void link_lock_to_txn(tcb_t* txn, lock_t* lock);
+void unlink_lock_from_txn(tcb_t* txn, lock_t* lock);
 bool has_granted_x(lock_t* head);
 
 #endif

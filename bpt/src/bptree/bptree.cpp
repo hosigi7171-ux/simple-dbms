@@ -145,6 +145,14 @@ int bpt_update(int fd, tableid_t table_id, int64_t key, char* new_value) {
 int find_with_txn(int fd, tableid_t table_id, int64_t key, char* ret_val,
                   int txn_id, tcb_t* tcb) {
   while (true) {
+    pthread_mutex_lock(&tcb->latch);
+    txn_state_t current_state = tcb->state;
+    pthread_mutex_unlock(&tcb->latch);
+
+    if (current_state != TXN_ACTIVE) {
+      return FAILURE;
+    }
+
     buf_ctl_block_t* leaf_bcb;
     pagenum_t leaf = find_leaf(fd, table_id, key, (void**)&leaf_bcb);
 
@@ -209,24 +217,31 @@ int find_with_txn(int fd, tableid_t table_id, int64_t key, char* ret_val,
       pthread_mutex_unlock(&leaf_bcb_reacquired->page_latch);
 
       return SUCCESS;
-
     } else if (lock_result == NEED_TO_WAIT) {
-      lock_wait(lock);
+      bool wait_success = lock_wait(lock);
+      if (!wait_success) {  // deadlock or abort
+        return FAILURE;
+      }
 
-      // 깨어난 후 재시도
+      // 성공적으로 락 획득, 다시 시도
       continue;
-
     } else {  // DEADLOCK
       return FAILURE;
     }
   }
 }
-/**
- * update with concurrency control
- */
+
 int update_with_txn(int fd, tableid_t table_id, int64_t key, char* new_value,
                     int txn_id, tcb_t* tcb) {
   while (true) {
+    pthread_mutex_lock(&tcb->latch);
+    txn_state_t current_state = tcb->state;
+    pthread_mutex_unlock(&tcb->latch);
+
+    if (current_state != TXN_ACTIVE) {
+      return FAILURE;
+    }
+
     buf_ctl_block_t* leaf_bcb;
     if (find_leaf(fd, table_id, key, (void**)&leaf_bcb) == PAGE_NULL) {
       return FAILURE;
@@ -300,9 +315,13 @@ int update_with_txn(int fd, tableid_t table_id, int64_t key, char* new_value,
       return SUCCESS;
     }
 
-    // Case: Wait
     if (st == NEED_TO_WAIT) {
-      lock_wait(lock);
+      bool wait_success = lock_wait(lock);
+      if (!wait_success) {  // deadlock or abort
+        return FAILURE;
+      }
+
+      // 성공적으로 락 획득, 다시 시도
       continue;
     }
 

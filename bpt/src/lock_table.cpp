@@ -6,6 +6,7 @@
 
 #include <cstdio>
 
+#include "time.h"
 #include "txn_mgr.h"
 
 std::unordered_map<hashkey_t, sentinel_t*, Hash> lock_table;
@@ -161,114 +162,63 @@ LockState try_immediate_grant(lock_t* lock_obj, sentinel_t* sentinel,
 }
 
 /**
- * helper function : handle deadlock
- * return ACQUIRED if victim aborted and lock granted
- * returns DEADLOCK if current transaction is victim
- * returns -1 if need to continue waiting
- */
-LockState handle_deadlock(lock_t* lock_obj, sentinel_t* sentinel,
-                          txnid_t txn_id, int lock_mode,
-                          const std::vector<txnid_t>& cycle) {
-  txnid_t victim = select_victim_from_cycle(cycle);
-
-  if (victim == txn_id) {
-    // current transaction is victim
-    pthread_mutex_lock(&lock_table_latch);
-    remove_lock_from_queue(lock_obj, sentinel);
-    pthread_mutex_unlock(&lock_table_latch);
-
-    remove_wait_for_edges_for_txn(txn_id);
-    destroy_lock_object(lock_obj);
-
-    return DEADLOCK;
-  } else {
-    // another transaction is victim
-    txn_abort(victim);
-
-    // check if can grant
-    pthread_mutex_lock(&lock_table_latch);
-    bool can_grant_now = can_grant(sentinel->head, lock_mode);
-    if (can_grant_now) {
-      lock_obj->granted = true;
-    }
-    pthread_mutex_unlock(&lock_table_latch);
-
-    if (can_grant_now) {
-      return ACQUIRED;
-    }
-    return (LockState)-1;  // continue to wait
-  }
-}
-
-/**
- * helper function
- * prepare for waiting (acquire transaction latch)
- * returns NEED_TO_WAIT if ready to wait
- * returns DEADLOCK if transaction not exist
- */
-LockState prepare_for_wait(lock_t* lock_obj, sentinel_t* sentinel,
-                           txnid_t txn_id, lock_t** ret_lock) {
-  pthread_mutex_lock(&txn_table.latch);
-
-  if (txn_table.transactions.count(txn_id) == 0) {
-    // transaction not exist -> clean up
-    pthread_mutex_unlock(&txn_table.latch);
-
-    pthread_mutex_lock(&lock_table_latch);
-    remove_lock_from_queue(lock_obj, sentinel);
-    pthread_mutex_unlock(&lock_table_latch);
-
-    remove_wait_for_edges_for_txn(txn_id);
-    destroy_lock_object(lock_obj);
-
-    return DEADLOCK;
-  }
-
-  tcb_t* tcb = txn_table.transactions[txn_id];
-  pthread_mutex_lock(&tcb->latch);
-  pthread_mutex_unlock(&txn_table.latch);
-
-  *ret_lock = lock_obj;
-  return NEED_TO_WAIT;
-}
-
-/**
- * Allocate and append a new lock object to the lock list of the record having
- * the key  Even if there is a predecessor’s conflicting lock object in the lock
- * list, do not sleep in this function, instead, acquire the latch of the
- * transaction calling this function. Set ret_lock with the address of the new
- * lock object if no deadlock have occured
- * not release the transaction latch in this function
- * @return Return value: 0 (ACQUIRED), 1 (NEED_TO_WAIT), 2 (DEADLOCK)
+ * Lock acquire
  */
 LockState lock_acquire(tableid_t table_id, recordid_t key, txnid_t txn_id,
                        tcb_t* owner_tcb, LockMode lock_mode,
                        lock_t** ret_lock) {
-  pthread_mutex_lock(&lock_table_latch);
+  hashkey_t hashkey = {table_id, key};
 
-  // 이미 락을 가지고 있는지
+  pthread_mutex_lock(&lock_table_latch);
+  pthread_mutex_lock(&owner_tcb->latch);
+
+  if (owner_tcb->state != TXN_ACTIVE) {
+    pthread_mutex_unlock(&owner_tcb->latch);
+    pthread_mutex_unlock(&lock_table_latch);
+    return DEADLOCK;
+  }
+
+  // 중복 락 확인 check if duplicate lock
   for (lock_t* curr = owner_tcb->lock_head; curr != nullptr;
        curr = curr->txn_next_lock) {
     if (curr->sentinel && curr->sentinel->hashkey.tableid == table_id &&
-        curr->sentinel->hashkey.recordid == key && curr->granted &&
-        curr->mode == lock_mode) {
-      *ret_lock = curr;
-      pthread_mutex_unlock(&lock_table_latch);
-      return ACQUIRED;
+        curr->sentinel->hashkey.recordid == key) {
+      if (curr->granted && curr->mode == lock_mode) {
+        *ret_lock = curr;
+        pthread_mutex_unlock(&owner_tcb->latch);
+        pthread_mutex_unlock(&lock_table_latch);
+        return ACQUIRED;
+      }
+      if (!curr->granted && curr->mode == lock_mode) {
+        *ret_lock = curr;
+        pthread_mutex_unlock(&owner_tcb->latch);
+        pthread_mutex_unlock(&lock_table_latch);
+        return NEED_TO_WAIT;
+      }
+      if (curr->mode == S_LOCK && lock_mode == X_LOCK) {
+        pthread_mutex_unlock(&owner_tcb->latch);
+        pthread_mutex_unlock(&lock_table_latch);
+        return DEADLOCK;
+      }
     }
   }
 
-  hashkey_t hashkey = {table_id, key};
-
-  // 락 오브젝트 생성 및 TCB 연결
   lock_t* lock_obj = create_lock_object(txn_id, owner_tcb, lock_mode);
   link_lock_to_txn(owner_tcb, lock_obj);
 
-  // Sentinel 찾기 또는 생성
   sentinel_t* sentinel = nullptr;
   if (lock_table.count(hashkey) == 0) {
-    create_new_sentinel(lock_obj, hashkey);
+    sentinel = (sentinel_t*)malloc(sizeof(sentinel_t));
+    sentinel->hashkey = hashkey;
+    sentinel->head = lock_obj;
+    sentinel->tail = lock_obj;
+    lock_obj->sentinel = sentinel;
+    lock_obj->prev = nullptr;
+    lock_obj->next = nullptr;
+    lock_obj->granted = true;
+    lock_table.insert(std::make_pair(hashkey, sentinel));
     *ret_lock = lock_obj;
+    pthread_mutex_unlock(&owner_tcb->latch);
     pthread_mutex_unlock(&lock_table_latch);
     return ACQUIRED;
   }
@@ -276,7 +226,7 @@ LockState lock_acquire(tableid_t table_id, recordid_t key, txnid_t txn_id,
   sentinel = lock_table[hashkey];
   lock_obj->sentinel = sentinel;
 
-  // 리스트 끝(Tail)에 자기 자신 추가
+  // 큐에 추가 add to lock obj queue
   lock_obj->prev = sentinel->tail;
   lock_obj->next = nullptr;
   if (sentinel->tail) {
@@ -286,51 +236,196 @@ LockState lock_acquire(tableid_t table_id, recordid_t key, txnid_t txn_id,
   }
   sentinel->tail = lock_obj;
 
-  // can_grant_specific을 사용하여 내 앞에 충돌하는 락이 있는지 검사
+  // 즉시 획득 가능한지 확인 check if available immediately
   if (can_grant_specific(sentinel->head, lock_obj)) {
     lock_obj->granted = true;
     *ret_lock = lock_obj;
+    pthread_mutex_unlock(&owner_tcb->latch);
     pthread_mutex_unlock(&lock_table_latch);
+    // printf(" Txn %d: ACQUIRED %s-lock on key=%ld immediately\n", txn_id,
+    //        lock_mode == S_LOCK ? "S" : "X", key);
     return ACQUIRED;
   }
 
-  // 획득 불가능하면 대기 상태로 설정
+  // need to wait
   lock_obj->granted = false;
   *ret_lock = lock_obj;
 
-  // Wait-for graph는 필요시 추가 (일단 배제)
-  // add_wait_for_edges(lock_obj, sentinel);
+  // find blocking transaction
+  std::unordered_set<txnid_t> blocking_txns;
+  // printf(" Txn %d: WAITING for %s-lock on key=%ld\n", txn_id,
+  //        lock_mode == S_LOCK ? "S" : "X", key);
+  // printf("   Lock queue for key=%ld: ", key);
 
-  // Transaction Latch 획득 (lock_wait을 수행하기 위한 준비)
-  pthread_mutex_lock(&txn_table.latch);
-  tcb_t* tcb = txn_table.transactions[txn_id];
-  pthread_mutex_lock(&tcb->latch);
-  pthread_mutex_unlock(&txn_table.latch);
+  for (lock_t* p = sentinel->head; p != nullptr; p = p->next) {
+    // printf("[Txn%d:%s:%s] ", p->owner_tcb->id, p->mode == S_LOCK ? "S" : "X",
+    //        p->granted ? "G" : "W");
+
+    if (p == lock_obj) break;
+
+    txnid_t blocker = p->owner_tcb->id;
+    if (blocker == txn_id) continue;
+
+    // 내 앞에 있는 락을 확인
+    if (p->granted) {
+      // Granted된 락과의 충돌 검사
+      bool conflicts = (p->mode == X_LOCK || lock_mode == X_LOCK);
+      if (conflicts) {
+        blocking_txns.insert(blocker);
+        // printf("\n   -> Blocked by Txn %d (granted)\n", blocker);
+      }
+    } else {
+      // 대기 중인 락도 blocking 가능
+      // 내가 S-lock이고 앞의 대기 락도 S-lock이면 함께 진행 가능
+      if (!(lock_mode == S_LOCK && p->mode == S_LOCK)) {
+        blocking_txns.insert(blocker);
+        // printf("\n   -> Blocked by Txn %d (waiting, FIFO)\n", blocker);
+      }
+    }
+  }
+  // printf("\n");
+
+  pthread_mutex_unlock(&owner_tcb->latch);
+
+  pthread_mutex_lock(&wait_for_graph_latch);
+
+  // 이 레코드에서의 edge만 추가
+  for (txnid_t blocker : blocking_txns) {
+    wait_for_graph[txn_id].insert(blocker);
+  }
+
+  // Wait-for graph 출력
+  // printf("   Wait-for graph:\n");
+  // for (auto& entry : wait_for_graph) {
+  //   printf("     Txn %d waits for: ", entry.first);
+  //   std::unordered_set<txnid_t> unique_blockers;
+  //   for (txnid_t b : entry.second) {
+  //     unique_blockers.insert(b);
+  //   }
+  //   for (txnid_t b : unique_blockers) {
+  //     printf("%d ", b);
+  //   }
+  //   printf("\n");
+  // }
+
+  // Deadlock 검사
+  std::vector<txnid_t> cycle = find_cycle_from_unlocked(txn_id);
+  bool has_deadlock = !cycle.empty();
+  std::vector<txnid_t> saved_cycle = cycle;
+
+  if (has_deadlock) {
+    // printf(" DEADLOCK DETECTED by Txn %d!\n", txn_id);
+
+    // 이 레코드에서 추가한 edge 제거
+    for (txnid_t blocker : blocking_txns) {
+      auto it = wait_for_graph[txn_id].find(blocker);
+      if (it != wait_for_graph[txn_id].end()) {
+        wait_for_graph[txn_id].erase(it);
+      }
+    }
+    if (wait_for_graph[txn_id].empty()) {
+      wait_for_graph.erase(txn_id);
+    }
+
+    pthread_mutex_unlock(&wait_for_graph_latch);
+    // print_deadlock_info(txn_id, saved_cycle, txn_id);
+
+    pthread_mutex_lock(&owner_tcb->latch);
+    unlink_lock_from_txn(owner_tcb, lock_obj);
+    pthread_mutex_unlock(&owner_tcb->latch);
+
+    remove_lock_from_queue(lock_obj, sentinel);
+
+    if (sentinel->head == nullptr && sentinel->tail == nullptr) {
+      lock_table.erase(hashkey);
+      free(sentinel);
+    }
+
+    destroy_lock_object(lock_obj);
+    pthread_mutex_unlock(&lock_table_latch);
+
+    return DEADLOCK;
+  }
+
+  pthread_mutex_unlock(&wait_for_graph_latch);
+
+  pthread_mutex_lock(&owner_tcb->latch);
+  if (owner_tcb->state != TXN_ACTIVE) {
+    pthread_mutex_unlock(&owner_tcb->latch);
+    pthread_mutex_unlock(&lock_table_latch);
+    return DEADLOCK;
+  }
 
   pthread_mutex_unlock(&lock_table_latch);
-
   return NEED_TO_WAIT;
 }
 
 /**
- * trasaction latch를 해제함과 동시에 sleep
- * sleep on the condition variable of the lock_obj,
- * atomically releasing the transaction latch
+ * lock wait
  * caller must hold transaction latch
+ * 락 대기 중 주기적 deadlock 재검사 포함
+ * 반환값: true = granted, false = deadlock or aborted
  */
-void lock_wait(lock_t* lock_obj) {
+bool lock_wait(lock_t* lock_obj) {
   tcb_t* owner_tcb = lock_obj->owner_tcb;
-
-  // printf("debug: Txn %d: Going to sleep for lock on key %ld\n",
-  // owner_tcb->id,
-  //        lock_obj->sentinel->hashkey.recordid);
+  txnid_t txn_id = owner_tcb->id;
 
   while (!lock_obj->granted) {
-    pthread_cond_wait(&lock_obj->cond, &owner_tcb->latch);
+    // TCB의 state를 체크하여 abort 여부 확인
+    if (owner_tcb->state != TXN_ACTIVE) {
+      pthread_mutex_unlock(&owner_tcb->latch);
+      return false;
+    }
+
+    // 대기 전 deadlock 재검사
+    pthread_mutex_unlock(&owner_tcb->latch);
+
+    pthread_mutex_lock(&wait_for_graph_latch);
+    std::vector<txnid_t> cycle = find_cycle_from_unlocked(txn_id);
+
+    bool has_deadlock = !cycle.empty();
+    std::vector<txnid_t> saved_cycle = cycle;
+
+    if (has_deadlock) {
+      // Wait-for graph 정리
+      wait_for_graph.erase(txn_id);
+      pthread_mutex_unlock(&wait_for_graph_latch);
+
+      // printf(" DEADLOCK DETECTED during wait by Txn %d!\n", txn_id);
+      // print_deadlock_info(txn_id, saved_cycle, txn_id);
+
+      return false;
+    }
+    pthread_mutex_unlock(&wait_for_graph_latch);
+
+    // TCB latch 재획득 후 대기
+    pthread_mutex_lock(&owner_tcb->latch);
+
+    // Double-check: granted 되었거나 abort 되었으면 바로 리턴
+    if (lock_obj->granted || owner_tcb->state != TXN_ACTIVE) {
+      break;
+    }
+
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    ts.tv_sec += 1;  // 1초 타임아웃
+
+    int wait_result =
+        pthread_cond_timedwait(&lock_obj->cond, &owner_tcb->latch, &ts);
+
+    // 타임아웃이나 시그널로 깨어났을 때 상태 재확인
+    if (owner_tcb->state != TXN_ACTIVE) {
+      pthread_mutex_unlock(&owner_tcb->latch);
+      return false;
+    }
+    if (lock_obj->granted) {
+      break;
+    }
+    // 타임아웃으로 깨어났으면 루프로 deadlock 재검사
   }
 
-  // printf("debug: Txn %d: Woke up and acquired lock!\n", owner_tcb->id);
   pthread_mutex_unlock(&owner_tcb->latch);
+  return true;
 }
 
 /**
@@ -341,22 +436,22 @@ void lock_wait(lock_t* lock_obj) {
 void remove_lock_from_queue(lock_t* lock_obj, sentinel_t* sentinel) {
   if (!lock_obj || !sentinel) return;
 
-  // 이미 리스트에서 빠진 락인지 확인
-  if (lock_obj->prev == nullptr && lock_obj->next == nullptr &&
-      sentinel->head != lock_obj) {
+  // double remove 방지
+  if (lock_obj->sentinel != sentinel) {
+    // printf(" WARNING: lock_obj->sentinel mismatch!\n");
     return;
   }
 
   if (lock_obj->prev != nullptr) {
     lock_obj->prev->next = lock_obj->next;
   } else {
-    if (sentinel->head == lock_obj) sentinel->head = lock_obj->next;
+    sentinel->head = lock_obj->next;
   }
 
   if (lock_obj->next != nullptr) {
     lock_obj->next->prev = lock_obj->prev;
   } else {
-    if (sentinel->tail == lock_obj) sentinel->tail = lock_obj->prev;
+    sentinel->tail = lock_obj->prev;
   }
 
   lock_obj->prev = nullptr;
@@ -379,44 +474,69 @@ int lock_release(lock_t* lock_obj) {
     return FAILURE;
   }
 
+  hashkey_t hashkey = sentinel->hashkey;
+  txnid_t releasing_txn = lock_obj->owner_tcb->id;
+
   remove_lock_from_queue(lock_obj, sentinel);
 
-  // // if there is no lock obj, remove sentinel
-  if (sentinel->head == nullptr && sentinel->tail == nullptr) {
+  bool sentinel_empty =
+      (sentinel->head == nullptr && sentinel->tail == nullptr);
+
+  if (sentinel_empty) {
     lock_table.erase(sentinel->hashkey);
     free(sentinel);
+
+    pthread_mutex_lock(&wait_for_graph_latch);
+    for (auto it = wait_for_graph.begin(); it != wait_for_graph.end();) {
+      it->second.erase(releasing_txn);
+      if (it->second.empty()) {
+        it = wait_for_graph.erase(it);
+      } else {
+        ++it;
+      }
+    }
+    pthread_mutex_unlock(&wait_for_graph_latch);
   }
 
-  // free lock obj
   destroy_lock_object(lock_obj);
 
-  // try to grant waiting locks
-  hashkey_t hashkey = sentinel->hashkey;
-  // printf("debug:  Lock released for key=%ld. Trying to grant waiters.\n",
-  //        hashkey.recordid);
-  try_grant_waiters_on_record(hashkey);
+  if (!sentinel_empty) {
+    try_grant_waiters_on_record(hashkey);
+  }
 
   pthread_mutex_unlock(&lock_table_latch);
   return 0;
 }
 
 /**
- * helper function for try_grant_waiters_on_record
- * Check if a specific lock can be granted
+ * helper function
+ * Check if a specific lock granted available now
+ * 특정 락이 지금 grant될 수 있는지 확인
  */
 bool can_grant_specific(lock_t* head, lock_t* target) {
   for (lock_t* p = head; p != target; p = p->next) {
-    if (p->owner_tcb == target->owner_tcb) {
-      continue;
-    }
-    if (!p->granted) {
-      return false;
-    }
-    if (p->granted && p->mode == S_LOCK && target->mode != X_LOCK) {
+    if (p->owner_tcb->id == target->owner_tcb->id) {
       continue;
     }
 
-    if (p->mode == X_LOCK || target->mode == X_LOCK) {
+    // granted된 락만 검사
+    if (!p->granted) {
+      if (target->mode == S_LOCK && p->mode == S_LOCK) {
+        continue;
+      }
+      return false;
+    }
+
+    // granted된 락과의 충돌 검사
+    bool conflicts = false;
+
+    if (p->mode == X_LOCK) {
+      conflicts = true;
+    } else if (p->mode == S_LOCK && target->mode == X_LOCK) {
+      conflicts = true;
+    }
+
+    if (conflicts) {
       return false;
     }
   }
@@ -424,38 +544,76 @@ bool can_grant_specific(lock_t* head, lock_t* target) {
 }
 
 /**
- * try to grant waiters in lock queue
- * lock_table_latch must be held by caller
+ * grant waiters lock authority in lock queue
  */
 void try_grant_waiters_on_record(hashkey_t hashkey) {
   if (lock_table.count(hashkey) == 0) return;
   sentinel_t* sentinel = lock_table[hashkey];
 
-  std::vector<lock_t*> ready_locks;
+  std::vector<std::pair<lock_t*, tcb_t*>> ready_locks;
 
-  for (lock_t* p = sentinel->head; p != nullptr; p = p->next) {
-    if (p->granted) continue;
+  // grant 가능한 락 찾기
+  lock_t* p = sentinel->head;
+  while (p != nullptr) {
+    lock_t* next = p->next;
+
+    if (p->granted) {
+      p = next;
+      continue;
+    }
+
+    pthread_mutex_lock(&txn_table.latch);
+    auto it = txn_table.transactions.find(p->owner_tcb->id);
+    bool txn_exists = (it != txn_table.transactions.end());
+    tcb_t* tcb = txn_exists ? it->second : nullptr;
+
+    bool is_active = false;
+    if (txn_exists && tcb) {
+      pthread_mutex_lock(&tcb->latch);
+      is_active = (tcb->state == TXN_ACTIVE);
+      pthread_mutex_unlock(&tcb->latch);
+    }
+    pthread_mutex_unlock(&txn_table.latch);
+
+    if (!txn_exists || !is_active) {
+      remove_lock_from_queue(p, sentinel);
+      pthread_cond_destroy(&p->cond);
+      free(p);
+      p = next;
+      continue;
+    }
 
     if (can_grant_specific(sentinel->head, p)) {
-      p->granted = true;
-      // printf("debug: Granting lock for Txn %d on Key %ld\n",
-      // p->owner_tcb->id,
-      //        hashkey.recordid);
-      ready_locks.push_back(p);
+      ready_locks.push_back({p, tcb});
+      if (p->mode == X_LOCK) {
+        break;
+      }
     } else {
-      // printf("debug: Cannot grant Txn %d, blocked by predecessor\n",
-      //        p->owner_tcb->id);
       break;
     }
+
+    p = next;
   }
 
-  for (lock_t* lock_obj : ready_locks) {
-    pthread_mutex_lock(&lock_obj->owner_tcb->latch);
-    // printf("debug: Sending Signal to Txn %d for Key %ld\n",
-    //        lock_obj->owner_tcb->id, hashkey.recordid);
+  if (ready_locks.empty()) return;
 
-    pthread_cond_signal(&lock_obj->cond);
+  // granted 설정
+  for (auto& pair : ready_locks) {
+    pair.first->granted = true;
+  }
 
-    pthread_mutex_unlock(&lock_obj->owner_tcb->latch);
+  // wait-for graph 재구성
+  rebuild_wait_for_graph_for_record(sentinel);
+
+  // 스레드 깨우기
+  for (auto& pair : ready_locks) {
+    lock_t* lock_obj = pair.first;
+    tcb_t* tcb = pair.second;
+
+    pthread_mutex_lock(&tcb->latch);
+    if (tcb->state == TXN_ACTIVE) {
+      pthread_cond_signal(&lock_obj->cond);
+    }
+    pthread_mutex_unlock(&tcb->latch);
   }
 }

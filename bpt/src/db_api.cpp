@@ -179,7 +179,9 @@ int db_find(int table_id, int64_t key, char* ret_val) {
   return FAILURE;
 }
 
-// 새로운 transactional 버전 추가
+/**
+ * db_find concurrency control version
+ */
 int db_find(int table_id, int64_t key, char* ret_val, int txn_id) {
   int fd = get_fd(table_id);
   if (fd < 0) {
@@ -188,8 +190,21 @@ int db_find(int table_id, int64_t key, char* ret_val, int txn_id) {
   }
 
   pthread_mutex_lock(&txn_table.latch);
-  tcb_t* tcb = txn_table.transactions[txn_id];
+  auto it = txn_table.transactions.find(txn_id);
+  if (it == txn_table.transactions.end()) {
+    pthread_mutex_unlock(&txn_table.latch);
+    return FAILURE;
+  }
+  tcb_t* tcb = it->second;
+
+  pthread_mutex_lock(&tcb->latch);
+  txn_state_t current_state = tcb->state;
+  pthread_mutex_unlock(&tcb->latch);
   pthread_mutex_unlock(&txn_table.latch);
+
+  if (current_state != TXN_ACTIVE) {
+    return FAILURE;
+  }
 
   int result = find_with_txn(fd, table_id, key, ret_val, txn_id, tcb);
 
@@ -201,7 +216,9 @@ int db_find(int table_id, int64_t key, char* ret_val, int txn_id) {
   return SUCCESS;
 }
 
-// 새로운 transactional update 추가
+/**
+ * db_update concurrency control version
+ */
 int db_update(int table_id, int64_t key, char* values, int txn_id) {
   int fd = get_fd(table_id);
   if (fd < 0) {
@@ -210,8 +227,21 @@ int db_update(int table_id, int64_t key, char* values, int txn_id) {
   }
 
   pthread_mutex_lock(&txn_table.latch);
-  tcb_t* tcb = txn_table.transactions[txn_id];
+  auto it = txn_table.transactions.find(txn_id);
+  if (it == txn_table.transactions.end()) {
+    pthread_mutex_unlock(&txn_table.latch);
+    return FAILURE;
+  }
+  tcb_t* tcb = it->second;
+
+  pthread_mutex_lock(&tcb->latch);
+  txn_state_t current_state = tcb->state;
+  pthread_mutex_unlock(&tcb->latch);
   pthread_mutex_unlock(&txn_table.latch);
+
+  if (current_state != TXN_ACTIVE) {
+    return FAILURE;
+  }
 
   int result = update_with_txn(fd, table_id, key, values, txn_id, tcb);
 

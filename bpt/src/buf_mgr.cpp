@@ -108,8 +108,8 @@ buf_ctl_block_t* read_buffer_with_txn(int fd, tableid_t table_id,
     bcb->pin_count++;  // eviction 방지
   }
 
-  pthread_mutex_unlock(&buffer_manager_latch);
-  pthread_mutex_lock(&bcb->page_latch);
+  pthread_mutex_unlock(&buffer_manager_latch);  // end fix phase
+  pthread_mutex_lock(&bcb->page_latch);         // start latch bcb
 
   return bcb;
 }

@@ -77,6 +77,7 @@ int txn_begin(void) {
   pthread_cond_init(&tcb->cond, nullptr);
   tcb->lock_head = nullptr;
   tcb->lock_tail = nullptr;
+  tcb->state = TXN_ACTIVE;  // 초기 상태
 
   txn_table.transactions[tcb->id] = tcb;
 
@@ -121,8 +122,6 @@ int acquire_txn_latch_and_pop_txn(txnid_t txn_id, tcb_t** out_tcb) {
 
   txn_table.transactions.erase(txn_id);
 
-  pthread_mutex_unlock(&txn_table.latch);
-
   *out_tcb = tcb;
   return 0;
 }
@@ -132,19 +131,49 @@ void release_txn_latch(tcb_t* tcb) { pthread_mutex_unlock(&tcb->latch); }
 /**
  * clean up transaction
  * if success return txn_id otherwise 0
- * 이미 caller가 txn latch는 잡고 있는 상태
  */
 int txn_commit(txnid_t txn_id) {
   tcb_t* tcb = nullptr;
 
-  if (acquire_txn_latch_and_pop_txn(txn_id, &tcb) != 0) {
+  // printf(" txn_commit: Txn %d committing\n", txn_id);
+
+  // TCB 획득 및 상태 변경
+  pthread_mutex_lock(&txn_table.latch);
+  auto it = txn_table.transactions.find(txn_id);
+  if (it == txn_table.transactions.end()) {
+    pthread_mutex_unlock(&txn_table.latch);
     return 0;
   }
+  tcb = it->second;
 
+  pthread_mutex_lock(&tcb->latch);
+  if (tcb->state != TXN_ACTIVE) {
+    // 이미 abort된 트랜잭션
+    pthread_mutex_unlock(&tcb->latch);
+    pthread_mutex_unlock(&txn_table.latch);
+    return 0;
+  }
+  tcb->state = TXN_COMMITTING;
+  pthread_mutex_unlock(&tcb->latch);
+
+  // txn_table에서 제거
+  txn_table.transactions.erase(txn_id);
+  pthread_mutex_unlock(&txn_table.latch);
+
+  // wait-for graph 정리
+  pthread_mutex_lock(&wait_for_graph_latch);
+  wait_for_graph.erase(txn_id);
+  for (auto& entry : wait_for_graph) {
+    entry.second.erase(txn_id);
+  }
+  pthread_mutex_unlock(&wait_for_graph_latch);
+
+  // 락 해제
   if (tcb->lock_head != nullptr) {
     lock_t* cur_lock = tcb->lock_head;
     tcb->lock_head = nullptr;
     tcb->lock_tail = nullptr;
+
     while (cur_lock) {
       lock_t* next = cur_lock->txn_next_lock;
       cur_lock->txn_next_lock = nullptr;
@@ -154,18 +183,20 @@ int txn_commit(txnid_t txn_id) {
     }
   }
 
+  // Undo log 해제
   undo_log_t* log = tcb->undo_head;
-  tcb->undo_head = nullptr;  //
+  tcb->undo_head = nullptr;
   while (log) {
     undo_log_t* next = log->prev;
     free(log);
     log = next;
   }
-  release_txn_latch(tcb);
+
   pthread_mutex_destroy(&tcb->latch);
   pthread_cond_destroy(&tcb->cond);
   free(tcb);
 
+  // printf(" txn_commit: Txn %d completed\n", txn_id);
   return txn_id;
 }
 
@@ -262,47 +293,128 @@ void wakeup_waiters_in_records(const std::vector<hashkey_t>& records) {
 
 /**
  * abort transaction
- * This function is called both by db_api and deadlock
+ * This function is called both by db_api
  */
 void txn_abort(txnid_t victim) {
-  tcb_t* txn_entry = nullptr;
-
-  // get tcb and remove from table immediately
+  pthread_mutex_lock(&lock_table_latch);
   pthread_mutex_lock(&txn_table.latch);
+
   auto it = txn_table.transactions.find(victim);
   if (it == txn_table.transactions.end()) {
     pthread_mutex_unlock(&txn_table.latch);
+    pthread_mutex_unlock(&lock_table_latch);
     return;
   }
 
-  txn_entry = it->second;
+  tcb_t* tcb = it->second;
+
+  pthread_mutex_lock(&tcb->latch);
+
+  if (tcb->state != TXN_ACTIVE) {
+    pthread_mutex_unlock(&tcb->latch);
+    pthread_mutex_unlock(&txn_table.latch);
+    pthread_mutex_unlock(&lock_table_latch);
+    return;
+  }
+
+  // 상태를 ABORTING으로 변경
+  tcb->state = TXN_ABORTING;
+
+  // 이 트랜잭션의 모든 락에 대해 broadcast, 대기 중인 스레드 깨우기
+  lock_t* cur_for_wakeup = tcb->lock_head;
+  while (cur_for_wakeup) {
+    pthread_cond_broadcast(&cur_for_wakeup->cond);
+    cur_for_wakeup = cur_for_wakeup->txn_next_lock;
+  }
+
+  pthread_mutex_unlock(&tcb->latch);
+
+  // txn_table에서 제거
   txn_table.transactions.erase(victim);
-  pthread_mutex_lock(&txn_entry->latch);
   pthread_mutex_unlock(&txn_table.latch);
 
-  // undo
-  undo_transaction(txn_entry);
+  // Undo 수행
+  pthread_mutex_lock(&tcb->latch);
+  undo_transaction(tcb);
+  pthread_mutex_unlock(&tcb->latch);
 
-  // release locks
+  // 락 수집 및 제거
   std::vector<hashkey_t> touched_records;
+  std::vector<lock_t*> locks_to_free;
 
-  pthread_mutex_lock(&lock_table_latch);
-  release_all_locks(txn_entry, touched_records);
+  lock_t* cur = tcb->lock_head;
+  while (cur) {
+    lock_t* next = cur->txn_next_lock;
+
+    sentinel_t* sentinel = cur->sentinel;
+    if (sentinel) {
+      hashkey_t hashkey = sentinel->hashkey;
+      touched_records.push_back(hashkey);
+
+      remove_lock_from_queue(cur, sentinel);
+
+      if (sentinel->head == nullptr && sentinel->tail == nullptr) {
+        lock_table.erase(hashkey);
+        free(sentinel);
+      }
+    }
+
+    locks_to_free.push_back(cur);
+    cur = next;
+  }
+
+  tcb->lock_head = nullptr;
+  tcb->lock_tail = nullptr;
+
+  // 대기자 깨우기
+  for (const hashkey_t& hashkey : touched_records) {
+    if (lock_table.count(hashkey) > 0) {
+      try_grant_waiters_on_record(hashkey);
+    }
+  }
+
+  // 락 객체 해제
+  for (lock_t* lock : locks_to_free) {
+    pthread_cond_destroy(&lock->cond);
+    free(lock);
+  }
+
   pthread_mutex_unlock(&lock_table_latch);
 
-  // remove wait-for edges
-  remove_wait_for_edges_for_txn(victim);
+  // Wait-for graph 정리
+  pthread_mutex_lock(&wait_for_graph_latch);
+  wait_for_graph.erase(victim);
+  for (auto& entry : wait_for_graph) {
+    entry.second.erase(victim);
+  }
+  pthread_mutex_unlock(&wait_for_graph_latch);
 
-  // wake up waiters
-  wakeup_waiters_in_records(touched_records);
+  pthread_mutex_lock(&tcb->latch);
+  tcb->state = TXN_ABORTED;
+  pthread_mutex_unlock(&tcb->latch);
 
-  // clean up TCB
-  release_txn_latch(txn_entry);
-  pthread_mutex_destroy(&txn_entry->latch);
-  pthread_cond_destroy(&txn_entry->cond);
-  free(txn_entry);
+  pthread_mutex_destroy(&tcb->latch);
+  pthread_cond_destroy(&tcb->cond);
+  free(tcb);
 
-  printf("txn_abort: transaction %d aborted\n", victim);
+  // printf("txn_abort: transaction %d aborted\n", victim);
+}
+
+void unlink_lock_from_txn(tcb_t* txn, lock_t* lock) {
+  if (lock->txn_prev_lock) {
+    lock->txn_prev_lock->txn_next_lock = lock->txn_next_lock;
+  } else {
+    txn->lock_head = lock->txn_next_lock;
+  }
+
+  if (lock->txn_next_lock) {
+    lock->txn_next_lock->txn_prev_lock = lock->txn_prev_lock;
+  } else {
+    txn->lock_tail = lock->txn_prev_lock;
+  }
+
+  lock->txn_prev_lock = nullptr;
+  lock->txn_next_lock = nullptr;
 }
 
 /**

@@ -1,9 +1,5 @@
 #include "deadlock.h"
 
-#include <stack>
-
-enum DfsState { FORWARD = 0, BACKTRACK = 1 };
-
 /**
  * helper function for find cycle members
  * collect all unique transaction id in wait-for graph
@@ -38,78 +34,40 @@ bool is_better(const victim_cand_t& a, const victim_cand_t& b) {
 }
 
 /**
- * helper function for find cycle members
- * dfs from single node to find cycle
- * @return if cycle exists return cycle path, otherwise empty vector
+ * DFS 상태
+ * WHITE:미방문, GRAY:탐색중, BLACK:방문완료
  */
-std::vector<txnid_t> dfs_find_cycle(txnid_t start_node,
-                                    std::unordered_set<txnid_t>& visited) {
-  std::stack<std::pair<txnid_t, DfsState>> dfs_stack;  // <node, dfs state>
-  std::vector<txnid_t> dfs_path;        // current path, used for get cycle
-  std::unordered_set<txnid_t> on_path;  // current path to check cycle
-
-  dfs_stack.push({start_node, FORWARD});
-  dfs_path.push_back(start_node);
-  on_path.insert(start_node);
-
-  while (!dfs_stack.empty()) {
-    txnid_t u = dfs_stack.top().first;
-    DfsState state = dfs_stack.top().second;
-    dfs_stack.pop();
-
-    if (state == BACKTRACK) {
-      // backtrack: mark u as visited and remove from path
-      visited.insert(u);
-      on_path.erase(u);
-      dfs_path.pop_back();
-      continue;
-    }
-
-    // forward: explore neighbors of u
-    dfs_stack.push({u, BACKTRACK});
-
-    if (wait_for_graph.count(u)) {
-      for (txnid_t v : wait_for_graph[u]) {
-        // cycle exists
-        if (on_path.count(v)) {
-          auto it = std::find(dfs_path.begin(), dfs_path.end(), v);
-          std::vector<txnid_t> cycle_members(it, dfs_path.end());
-          return cycle_members;
-        }
-
-        // neighbor not visited, dfs
-        if (visited.find(v) == visited.end()) {
-          dfs_stack.push({v, FORWARD});
-          dfs_path.push_back(v);
-          on_path.insert(v);
-        }
-      }
-    }
-  }
-
-  return {};
-}
+enum NodeColor { WHITE = 0, GRAY = 1, BLACK = 2 };
 
 /**
- * find cycle path in wait-for graph
- * @return if cycle exists return cycle path, otherwise empty vector
+ * DFS 기반 사이클 탐지
  */
-std::vector<txnid_t> find_cycle_members() {
-  std::unordered_set<txnid_t> visited;  // nodes explored
-  pthread_mutex_lock(&wait_for_graph_latch);
+std::vector<txnid_t> dfs_find_cycle(
+    txnid_t u, std::unordered_map<txnid_t, NodeColor>& color,
+    std::vector<txnid_t>& path) {
+  color[u] = GRAY;  // 현재 경로(Stack)에 추가됨을 표시
+  path.push_back(u);
 
-  std::vector<txnid_t> txn_nodes = collect_all_txn_nodes();
-  for (txnid_t node : txn_nodes) {
-    if (visited.count(node)) continue;
+  if (wait_for_graph.count(u)) {
+    for (txnid_t v : wait_for_graph[u]) {
+      // 현재 탐색 중인 경로(GRAY)에 있는 노드를 만나면 사이클
+      if (color[v] == GRAY) {
+        auto it = std::find(path.begin(), path.end(), v);
+        return std::vector<txnid_t>(it, path.end());
+      }
 
-    std::vector<txnid_t> cycle = dfs_find_cycle(node, visited);
-    if (!cycle.empty()) {
-      pthread_mutex_unlock(&wait_for_graph_latch);
-      return cycle;
+      // 미방문 노드(WHITE)라면 재귀적으로 탐색
+      if (color[v] == WHITE) {
+        std::vector<txnid_t> cycle = dfs_find_cycle(v, color, path);
+        if (!cycle.empty()) return cycle;
+      }
+
+      // 이미 방문 완료(BLACK)된 노드는 무시, 이미 cycle 아님이 검증됨
     }
   }
 
-  pthread_mutex_unlock(&wait_for_graph_latch);
+  path.pop_back();
+  color[u] = BLACK;  // 이 노드로부터 시작되는 모든 경로는 사이클이 없음
   return {};
 }
 
@@ -125,59 +83,35 @@ std::vector<txnid_t> find_cycle_from(txnid_t txn_id) {
     return {};
   }
 
-  std::unordered_set<txnid_t> visited;
-  std::vector<txnid_t> cycle = dfs_find_cycle(txn_id, visited);
+  std::unordered_map<txnid_t, NodeColor> color;
+  // 모든 노드를 WHITE로 초기화
+  std::vector<txnid_t> nodes = collect_all_txn_nodes();
+  for (txnid_t n : nodes) color[n] = WHITE;
+
+  std::vector<txnid_t> path;
+  std::vector<txnid_t> cycle = dfs_find_cycle(txn_id, color, path);
 
   pthread_mutex_unlock(&wait_for_graph_latch);
   return cycle;
 }
 
 /**
- * select victim in cycle
- * 1. s-only, younger
- * 2. s many, younger
- * 3. younger
+ * find cycle from unlocked version
+ * caller must hold wait_for_graph_latch
  */
-txnid_t select_victim_from_cycle(const std::vector<txnid_t>& cycle) {
-  std::vector<victim_cand_t> cand;
-
-  pthread_mutex_lock(&txn_table.latch);
-
-  for (txnid_t tid : cycle) {
-    auto it = txn_table.transactions.find(tid);
-    if (it == txn_table.transactions.end()) continue;
-
-    tcb_t* tcb = it->second;
-
-    pthread_mutex_lock(&tcb->latch);
-    // pthread_mutex_unlock(&txn_table.latch); table unlock할 필요가 없는듯?일단
-    // 보류
-
-    int s_count = 0;
-    bool has_x = false;
-
-    for (lock_t* l = tcb->lock_head; l; l = l->txn_next_lock) {
-      if (!l->granted) continue;
-      if (l->mode == S_LOCK)
-        s_count++;
-      else
-        has_x = true;
-    }
-
-    cand.push_back({tid, s_count, !has_x});
-
-    pthread_mutex_unlock(&tcb->latch);
-    // pthread_mutex_lock(&txn_table.latch);
+std::vector<txnid_t> find_cycle_from_unlocked(txnid_t txn_id) {
+  if (!wait_for_graph.count(txn_id)) {
+    pthread_mutex_unlock(&wait_for_graph_latch);
+    return {};
   }
 
-  pthread_mutex_unlock(&txn_table.latch);
+  std::unordered_map<txnid_t, NodeColor> color;
+  // 모든 노드를 WHITE로 초기화
+  std::vector<txnid_t> nodes = collect_all_txn_nodes();
+  for (txnid_t n : nodes) color[n] = WHITE;
 
-  victim_cand_t best = cand[0];
-  for (size_t i = 1; i < cand.size(); i++) {
-    if (is_better(best, cand[i])) {
-      best = cand[i];
-    }
-  }
+  std::vector<txnid_t> path;
+  std::vector<txnid_t> cycle = dfs_find_cycle(txn_id, color, path);
 
-  return best.tid;
+  return cycle;
 }

@@ -61,7 +61,7 @@ int init_lock_table();
 LockState lock_acquire(tableid_t table_id, recordid_t key, txnid_t txn_id,
                        tcb_t* owner_tcb, LockMode lock_mode, lock_t** ret_lock);
 int lock_release(lock_t* lock_obj);
-void lock_wait(lock_t* lock_obj);
+bool lock_wait(lock_t* lock_obj);
 void try_grant_waiters_on_record(hashkey_t hashkey);
 void remove_lock_from_queue(lock_t* lock_obj, sentinel_t* sentinel);
 bool can_grant_specific(lock_t* head, lock_t* target);
