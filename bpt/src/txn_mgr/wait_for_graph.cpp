@@ -167,6 +167,7 @@ void remove_wait_for_edges_on_grant(txnid_t txn_id, sentinel_t* sentinel) {
 }
 
 /**
+ * not used now(12.22)
  * helper function used in try_grant_waiters_on_record
  * rebuild wait for graph to check accurate status
  */
@@ -235,6 +236,43 @@ void rebuild_wait_for_graph_for_record(sentinel_t* sentinel) {
       wait_for_graph.erase(me);
     }
   }
+  pthread_mutex_unlock(&wait_for_graph_latch);
+}
+
+/**
+ * update wait for graph
+ * update only changed part
+ */
+void update_wait_for_graph_on_grant(lock_t* granted_lock,
+                                    sentinel_t* sentinel) {
+  pthread_mutex_lock(&wait_for_graph_latch);
+
+  txnid_t granted_txn = granted_lock->owner_tcb->id;
+
+  // 트랜잭션의 outgoing edges 제거
+  wait_for_graph.erase(granted_txn);
+
+  // 트랜잭션의 뒤에서 대기 중인 트랜잭션들만 업데이트
+  bool found_granted = false;
+  for (lock_t* p = sentinel->head; p != nullptr; p = p->next) {
+    if (p == granted_lock) {
+      found_granted = true;
+      continue;
+    }
+
+    if (found_granted && !p->granted) {
+      txnid_t waiter = p->owner_tcb->id;
+
+      // granted_lock과의 충돌만 확인
+      bool conflicts = (granted_lock->mode == X_LOCK || p->mode == X_LOCK);
+
+      if (conflicts) {
+        // 새로운 blocking 관계 추가
+        wait_for_graph[waiter].insert(granted_txn);
+      }
+    }
+  }
+
   pthread_mutex_unlock(&wait_for_graph_latch);
 }
 
