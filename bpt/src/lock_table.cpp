@@ -171,7 +171,9 @@ LockState lock_acquire(tableid_t table_id, recordid_t key, txnid_t txn_id,
 
   pthread_mutex_lock(&lock_table_latch);
   pthread_mutex_lock(&wait_for_graph_latch);
+  pthread_mutex_lock(&txn_table.latch);
   pthread_mutex_lock(&owner_tcb->latch);
+  pthread_mutex_unlock(&txn_table.latch);
 
   if (owner_tcb->state != TXN_ACTIVE) {
     pthread_mutex_unlock(&owner_tcb->latch);

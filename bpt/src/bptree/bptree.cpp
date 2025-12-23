@@ -177,47 +177,23 @@ int find_with_txn(int fd, tableid_t table_id, int64_t key, char* ret_val,
       return FAILURE;
     }
 
-    unpin_bcb(leaf_bcb);
-    pthread_mutex_unlock(&leaf_bcb->page_latch);
-
     lock_t* lock = nullptr;
     LockState lock_result =
         lock_acquire(table_id, key, txn_id, tcb, S_LOCK, &lock);
 
     if (lock_result == ACQUIRED) {
-      buf_ctl_block_t* leaf_bcb_reacquired;
-      if (find_leaf(fd, table_id, key, (void**)&leaf_bcb_reacquired) ==
-          PAGE_NULL) {
-        return FAILURE;
-      }
+      copy_value(ret_val, leaf_page->records[found_idx].value, VALUE_SIZE);
 
-      leaf_page_t* leaf_page_reacquired =
-          (leaf_page_t*)leaf_bcb_reacquired->frame;
-
-      // 다시 인덱스 찾기
-      int found_idx_reacquired = -1;
-      for (int i = 0; i < leaf_page_reacquired->num_of_keys; i++) {
-        if (leaf_page_reacquired->records[i].key == key) {
-          found_idx_reacquired = i;
-          break;
-        }
-      }
-
-      if (found_idx_reacquired == -1) {
-        unpin_bcb(leaf_bcb_reacquired);
-        pthread_mutex_unlock(&leaf_bcb_reacquired->page_latch);
-        return FAILURE;
-      }
-
-      copy_value(ret_val,
-                 leaf_page_reacquired->records[found_idx_reacquired].value,
-                 VALUE_SIZE);
-
-      unpin_bcb(leaf_bcb_reacquired);
-      pthread_mutex_unlock(&leaf_bcb_reacquired->page_latch);
+      unpin_bcb(leaf_bcb);
+      pthread_mutex_unlock(&leaf_bcb->page_latch);
 
       return SUCCESS;
-    } else if (lock_result == NEED_TO_WAIT) {
+    }
+
+    if (lock_result == NEED_TO_WAIT) {
+      unpin_bcb(leaf_bcb);
+      pthread_mutex_unlock(&leaf_bcb->page_latch);
+
       bool wait_success = lock_wait(lock);
       if (!wait_success) {  // deadlock or abort
         return FAILURE;
@@ -225,9 +201,18 @@ int find_with_txn(int fd, tableid_t table_id, int64_t key, char* ret_val,
 
       // 성공적으로 락 획득, 다시 시도
       continue;
-    } else {  // DEADLOCK
+    }
+
+    if (lock_result == DEADLOCK) {
+      unpin_bcb(leaf_bcb);
+      pthread_mutex_unlock(&leaf_bcb->page_latch);
+
       return FAILURE;
     }
+
+    unpin_bcb(leaf_bcb);
+    pthread_mutex_unlock(&leaf_bcb->page_latch);
+    return FAILURE;
   }
 }
 
@@ -266,43 +251,13 @@ int update_with_txn(int fd, tableid_t table_id, int64_t key, char* new_value,
     char old_value[VALUE_SIZE];
     memcpy(old_value, leaf->records[idx].value, VALUE_SIZE);
 
-    unpin_bcb(leaf_bcb);
-    pthread_mutex_unlock(&leaf_bcb->page_latch);
-
     lock_t* lock;
-    LockState st = lock_acquire(table_id, key, txn_id, tcb, X_LOCK, &lock);
+    LockState lock_result =
+        lock_acquire(table_id, key, txn_id, tcb, X_LOCK, &lock);
 
-    if (st == ACQUIRED) {
-      // 페이지를 다시 찾아야
-      buf_ctl_block_t* leaf_bcb_reacquired;
-      if (find_leaf(fd, table_id, key, (void**)&leaf_bcb_reacquired) ==
-          PAGE_NULL) {
-        return FAILURE;
-      }
-
-      leaf_page_t* leaf_reacquired = (leaf_page_t*)leaf_bcb_reacquired->frame;
-
-      // 다시 인덱스 찾기
-      int idx_reacquired = -1;
-      for (int i = 0; i < leaf_reacquired->num_of_keys; i++) {
-        if (leaf_reacquired->records[i].key == key) {
-          idx_reacquired = i;
-          break;
-        }
-      }
-
-      if (idx_reacquired == -1) {
-        unpin_bcb(leaf_bcb_reacquired);
-        pthread_mutex_unlock(&leaf_bcb_reacquired->page_latch);
-        return FAILURE;
-      }
-
-      memcpy(leaf_reacquired->records[idx_reacquired].value, new_value,
-             VALUE_SIZE);
-      leaf_bcb_reacquired->is_dirty = true;
-
-      unpin_bcb(leaf_bcb_reacquired);
-      pthread_mutex_unlock(&leaf_bcb_reacquired->page_latch);
+    if (lock_result == ACQUIRED) {
+      unpin_bcb(leaf_bcb);
+      pthread_mutex_unlock(&leaf_bcb->page_latch);
 
       undo_log_t* log = (undo_log_t*)malloc(sizeof(undo_log_t));
       log->fd = fd;
@@ -315,7 +270,10 @@ int update_with_txn(int fd, tableid_t table_id, int64_t key, char* new_value,
       return SUCCESS;
     }
 
-    if (st == NEED_TO_WAIT) {
+    if (lock_result == NEED_TO_WAIT) {
+      unpin_bcb(leaf_bcb);
+      pthread_mutex_unlock(&leaf_bcb->page_latch);
+
       bool wait_success = lock_wait(lock);
       if (!wait_success) {  // deadlock or abort
         return FAILURE;
@@ -325,10 +283,15 @@ int update_with_txn(int fd, tableid_t table_id, int64_t key, char* new_value,
       continue;
     }
 
-    if (st == DEADLOCK) {
+    if (lock_result == DEADLOCK) {
+      unpin_bcb(leaf_bcb);
+      pthread_mutex_unlock(&leaf_bcb->page_latch);
+
       return FAILURE;
     }
 
+    unpin_bcb(leaf_bcb);
+    pthread_mutex_unlock(&leaf_bcb->page_latch);
     return FAILURE;
   }
 }
