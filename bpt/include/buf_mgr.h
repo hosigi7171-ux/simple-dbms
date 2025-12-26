@@ -1,6 +1,8 @@
 #ifndef BUF_MGR_H
 #define BUF_MGR_H
 
+#include <pthread.h>
+
 #include <unordered_map>
 
 #include "common_config.h"
@@ -25,7 +27,7 @@ typedef struct {
   bool is_dirty;
   int pin_count;
   bool ref_bit;
-  // fields will be added later
+  pthread_mutex_t page_latch;
 } buf_ctl_block_t;
 
 typedef struct {
@@ -36,6 +38,7 @@ typedef struct {
 } buffer_manager_t;
 
 extern buffer_manager_t buf_mgr;
+extern pthread_mutex_t buffer_manager_latch;
 
 // flush buffer
 void flush_table_buffer(int fd, tableid_t table_id);
@@ -44,10 +47,13 @@ void flush_frame(int fd, tableid_t table_id, frame_idx_t frame_idx);
 
 // read/write buffer
 header_page_t* read_header_page(int fd, tableid_t table_id);
+buf_ctl_block_t* read_header_page_with_txn(int fd, tableid_t table_id);
 page_t* get_page_from_buffer(
     pagenum_t page_num,
     std::unordered_map<pagenum_t, frame_idx_t>& frame_mapper);
 page_t* read_buffer(int fd, tableid_t table_id, pagenum_t page_num);
+buf_ctl_block_t* read_buffer_with_txn(int fd, tableid_t table_id,
+                                      pagenum_t page_num);
 frame_idx_t load_page_into_buffer(int fd, tableid_t table_id,
                                   pagenum_t page_num);
 void set_new_bcb(tableid_t table_id, pagenum_t page_num, frame_idx_t frame_idx,
@@ -57,6 +63,10 @@ void set_new_prefetched_bcb(tableid_t table_id, pagenum_t page_num,
 void prefetch(int fd, pagenum_t page_num, tableid_t table_id,
               frame_idx_t frame_idx,
               std::unordered_map<pagenum_t, frame_idx_t>& frame_mapper);
+void prefetch_with_txn(int fd, pagenum_t page_num, tableid_t table_id,
+                       frame_idx_t frame_idx,
+                       std::unordered_map<pagenum_t, frame_idx_t>& frame_mapper,
+                       header_page_t* header_page_ptr);
 void write_buffer(tableid_t table_id, pagenum_t page_num, page_t* page);
 allocated_page_info_t make_and_pin_page(int fd, tableid_t table_id);
 frame_idx_t get_frame_index_by_page(tableid_t table_id, pagenum_t page_num);
@@ -68,8 +78,7 @@ void free_page_in_buffer(int fd, tableid_t table_id, pagenum_t page_num);
 void pin(tableid_t table_id, pagenum_t page_num);
 void pin_frame(frame_idx_t frame_idx);
 void unpin(tableid_t table_id, pagenum_t page_num);
-void unpin_frame(frame_idx_t frame_idx);
-
+void unpin_bcb(buf_ctl_block_t* bcb);
 void mark_dirty(tableid_t table_id, pagenum_t page_num);
 
 // clock algorithm

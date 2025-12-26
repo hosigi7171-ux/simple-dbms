@@ -9,7 +9,9 @@
 #ifndef NON_HEADER_PAGE_RESERVED
 #define NON_HEADER_PAGE_RESERVED 104
 #endif
+#ifndef VALUE_SIZE
 #define VALUE_SIZE 120
+#endif
 #ifndef RECORD_CNT
 #define RECORD_CNT 31
 #endif

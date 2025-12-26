@@ -2,6 +2,8 @@
 
 #include "bpt.h"
 #include "buf_mgr.h"
+#include "lock_table.h"
+#include "txn_mgr.h"
 
 table_info_t table_infos[MAX_TABLE_COUNT + 1] = {0};
 std::unordered_map<std::string, tableid_t> path_table_mapper;
@@ -40,6 +42,12 @@ int init_buffer_manager(int buf_num) {
   for (int index = 0; index < buf_num; index++) {
     memset(&buf_mgr.frames[index], 0, sizeof(buf_ctl_block_t));
 
+    // 페이지 래치 초기화
+    if (pthread_mutex_init(&buf_mgr.frames[index].page_latch, NULL) != 0) {
+      free_buffer_manager(index);
+      return FAILURE;
+    }
+
     buf_mgr.frames[index].frame = malloc(PAGE_SIZE);
     if (buf_mgr.frames[index].frame == NULL) {
       free_buffer_manager(index);
@@ -59,6 +67,7 @@ int init_db(int buf_num) {
   }
 
   init_table_infos();
+  init_txn_table();
   return init_buffer_manager(buf_num);
 }
 
@@ -171,6 +180,80 @@ int db_find(int table_id, int64_t key, char* ret_val) {
 }
 
 /**
+ * db_find concurrency control version
+ */
+int db_find(int table_id, int64_t key, char* ret_val, int txn_id) {
+  int fd = get_fd(table_id);
+  if (fd < 0) {
+    txn_abort(txn_id);
+    return FAILURE;
+  }
+
+  pthread_mutex_lock(&txn_table.latch);
+  auto it = txn_table.transactions.find(txn_id);
+  if (it == txn_table.transactions.end()) {
+    pthread_mutex_unlock(&txn_table.latch);
+    return FAILURE;
+  }
+  tcb_t* tcb = it->second;
+
+  pthread_mutex_lock(&tcb->latch);
+  txn_state_t current_state = tcb->state;
+  pthread_mutex_unlock(&tcb->latch);
+  pthread_mutex_unlock(&txn_table.latch);
+
+  if (current_state != TXN_ACTIVE) {
+    return FAILURE;
+  }
+
+  int result = find_with_txn(fd, table_id, key, ret_val, txn_id, tcb);
+
+  if (result == FAILURE) {
+    txn_abort(txn_id);
+    return FAILURE;
+  }
+
+  return SUCCESS;
+}
+
+/**
+ * db_update concurrency control version
+ */
+int db_update(int table_id, int64_t key, char* values, int txn_id) {
+  int fd = get_fd(table_id);
+  if (fd < 0) {
+    txn_abort(txn_id);
+    return FAILURE;
+  }
+
+  pthread_mutex_lock(&txn_table.latch);
+  auto it = txn_table.transactions.find(txn_id);
+  if (it == txn_table.transactions.end()) {
+    pthread_mutex_unlock(&txn_table.latch);
+    return FAILURE;
+  }
+  tcb_t* tcb = it->second;
+
+  pthread_mutex_lock(&tcb->latch);
+  txn_state_t current_state = tcb->state;
+  pthread_mutex_unlock(&tcb->latch);
+  pthread_mutex_unlock(&txn_table.latch);
+
+  if (current_state != TXN_ACTIVE) {
+    return FAILURE;
+  }
+
+  int result = update_with_txn(fd, table_id, key, values, txn_id, tcb);
+
+  if (result == FAILURE) {
+    txn_abort(txn_id);
+    return FAILURE;
+  }
+
+  return SUCCESS;
+}
+
+/**
  * @brief Find the matching record and delete it if found
  * If success, return 0. Otherwise, return non-zero value
  */
@@ -235,6 +318,8 @@ int shutdown_db(void) {
   if (buf_mgr.frames != NULL) {
     free_buffer_manager(buf_mgr.frames_size);
   }
+
+  destroy_txn_table();
 
   clear_path_table_mapper();
 
