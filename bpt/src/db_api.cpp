@@ -3,12 +3,22 @@
 #include "bpt.h"
 #include "buf_mgr.h"
 #include "lock_table.h"
+#include "log.h"
 #include "txn_mgr.h"
 
 table_info_t table_infos[MAX_TABLE_COUNT + 1] = {0};
 std::unordered_map<std::string, tableid_t> path_table_mapper;
 
-int get_fd(tableid_t table_id) { return table_infos[table_id].fd; }
+int get_fd(tableid_t table_id) {
+  if (table_id < 1 || table_id > MAX_TABLE_COUNT) {
+    return -1;
+  }
+  int fd = table_infos[table_id].fd;
+  if (fd <= 0) {
+    return -1;
+  }
+  return table_infos[table_id].fd;
+}
 
 /**
  * helpeer function for init_buffer_manager and shutdown_db
@@ -60,6 +70,7 @@ int init_buffer_manager(int buf_num) {
 /**
  * @brief Initialize buffer pool with given number and buffer manager
  * If success, return 0. Otherwise, return non-zero value
+ * Allowed for compatibility with previous projects
  */
 int init_db(int buf_num) {
   if (buf_num < 0) {
@@ -69,6 +80,30 @@ int init_db(int buf_num) {
   init_table_infos();
   init_txn_table();
   return init_buffer_manager(buf_num);
+}
+
+/**
+ * @brief Initialize DBMS and execute recovery process
+ * If success, return 0. Otherwise, return non-zero value
+ */
+int init_db(int buf_num, int flag, int log_num, char* log_path,
+            char* logmsg_path) {
+  if (buf_num < 0) {
+    return FAILURE;
+  }
+  init_table_infos();
+  if (init_buffer_manager(buf_num) != SUCCESS) {
+    return FAILURE;
+  }
+  init_txn_table();
+  if (log_init(log_path, logmsg_path) != SUCCESS) {
+    return FAILURE;
+  }
+  int recovery_result = log_recovery(flag, log_num);
+  if (recovery_result == CRASH) {
+    return SUCCESS;  // intended crash is also success
+  }
+  return SUCCESS;
 }
 
 /**
@@ -91,25 +126,86 @@ int find_free_table() {
 }
 
 /**
- * @brief Open existing data file using ‘pathname’ or create one if not existed
- * must give the same table id when db opens the same table
- • If success, return the table id,
- * which represents the own table in this database.
- * Otherwise, return negative value
+ * @brief Extract table id from filename "DATA[NUM]"
+ * Example: "DATA1" -> 1, "DATA3" -> 3
+ * @return table id (1~10), or -1 on error
+ */
+int extract_table_id_from_path(const char* pathname) {
+  // Find last '/' or '\' to get filename only
+  const char* filename = strrchr(pathname, '/');
+  if (filename == nullptr) {
+    filename = strrchr(pathname, '\\');
+  }
+  if (filename != nullptr) {
+    filename++;  // skip the '/' or '\'
+  } else {
+    filename = pathname;
+  }
+
+  // Check if filename starts with "DATA"
+  if (strncmp(filename, "DATA", 4) != 0) {
+    return -1;
+  }
+
+  // extract number after "DATA"
+  const char* num_str = filename + 4;
+  if (*num_str == '\0') return -1;
+  char* endptr;
+  long num = strtol(num_str, &endptr, 10);
+
+  // validation check
+  if (num_str == endptr || (*endptr != '\0' && *endptr != '.')) {
+    return -1;
+  }
+
+  // range check
+  if (num < 1 || num > 10) {
+    return -1;
+  }
+
+  return (int)num;
+}
+
+/**
+ * @brief Open existing data file using 'pathname' or create one if not existed
+ * Filename must be in format "DATA[NUM]" where NUM is 1~10
+ * The table id will be NUM extracted from the filename
+ *
+ * @param pathname Path to the data file (e.g., "DATA1", "./DATA3",
+ * "/path/to/DATA5")
+ * @return table id (1~10) on success, negative value on failure
  */
 int open_table(char* pathname) {
   if (strlen(pathname) > PATH_NAME_MAX_LENGTH) {
     return FAILURE;
   }
 
+  // Extract table_id from filename (must be "DATA[NUM]" format)
+  int expected_table_id = extract_table_id_from_path(pathname);
+  if (expected_table_id < 1 || expected_table_id > 10) {
+    fprintf(stderr,
+            "Error: Invalid filename format. Must be DATA[1-10]!! this is %d\n",
+            expected_table_id);
+    return FAILURE;
+  }
+  // Check if this table_id is already open
+  if (table_infos[expected_table_id].fd > 0) {
+    if (strcmp(table_infos[expected_table_id].path, pathname) == 0) {
+      return expected_table_id;
+    } else {
+      fprintf(stderr, "Error: Table id %d already open with different path\n",
+              expected_table_id);
+      return FAILURE;
+    }
+  }
+
   // Check if this pathname was opened before
   if (path_table_mapper.count(pathname)) {
-    tableid_t table_id = path_table_mapper[pathname];
+    tableid_t mapped_table_id = path_table_mapper[pathname];
 
-    // 이미 열려있는지 확인 (fd가 유효한지)
-    if (table_infos[table_id].fd > 0) {
-      // already open
-      return table_id;
+    if (mapped_table_id != expected_table_id) {
+      fprintf(stderr, "Error: Table id mismatch for %s\n", pathname);
+      return FAILURE;
     }
 
     // 닫혀있으면 재오픈 (같은 table_id 재사용)
@@ -119,15 +215,18 @@ int open_table(char* pathname) {
       return FAILURE;
     }
 
-    table_infos[table_id].fd = fd;
+    table_infos[expected_table_id].fd = fd;
 
-    return table_id;
+    return expected_table_id;
   }
 
-  // New pathname - allocate new table_id
-  tableid_t table_id = find_free_table();
-  if (table_id == FAILURE) {
-    return FAILURE;
+  // Verify this table slot is free
+  if (table_infos[expected_table_id].fd > 0) {
+    if (strcmp(table_infos[expected_table_id].path, pathname) != 0) {
+      fprintf(stderr, "Error: Table id %d is already used by %s\n",
+              expected_table_id, table_infos[expected_table_id].path);
+      return FAILURE;
+    }
   }
   mode_t mode = 0644;
   int fd = open(pathname, O_RDWR | O_CREAT, mode);
@@ -135,22 +234,25 @@ int open_table(char* pathname) {
     return FAILURE;
   }
 
-  table_infos[table_id].fd = fd;
-  strncpy(table_infos[table_id].path, pathname, PATH_NAME_MAX_LENGTH);
-  table_infos[table_id].path[PATH_NAME_MAX_LENGTH] = '\0';
-  path_table_mapper[pathname] = table_id;
+  // register in table_infos and path_table_mapper
+  table_infos[expected_table_id].fd = fd;
+  strncpy(table_infos[expected_table_id].path, pathname, PATH_NAME_MAX_LENGTH);
+  table_infos[expected_table_id].path[PATH_NAME_MAX_LENGTH] = '\0';
+  path_table_mapper[pathname] = expected_table_id;
 
   // Setup metadata
   struct stat stat_buf;
   if (fstat(fd, &stat_buf) == -1) {
     close(fd);
+    table_infos[expected_table_id].fd = 0;
+    path_table_mapper.erase(pathname);
     return FAILURE;
   }
   if (stat_buf.st_size == 0) {
-    init_header_page(fd, table_id);
+    init_header_page(fd, expected_table_id);
   }
 
-  return table_id;
+  return expected_table_id;
 }
 
 /**
@@ -308,18 +410,17 @@ void clear_path_table_mapper() {
  • If success, return 0. Otherwise, return non-zero value
  */
 int shutdown_db(void) {
-  for (int table_id = 1; table_id <= MAX_TABLE_COUNT; table_id++) {
-    int fd = table_infos[table_id].fd;
-    if (fd > 0) {
-      flush_table_buffer(fd, table_id);
-    }
-  }
+  log_force_flush();
+
+  flush_all_page_buffer();
 
   if (buf_mgr.frames != NULL) {
     free_buffer_manager(buf_mgr.frames_size);
   }
 
   destroy_txn_table();
+
+  log_close();
 
   clear_path_table_mapper();
 

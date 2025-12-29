@@ -6,8 +6,10 @@
 #include <cstdlib>
 #include <cstring>
 #include <unordered_map>
+#include <vector>
 
 #include "file.h"
+#include "log.h"
 
 buffer_manager_t buf_mgr = {0};  // temp buffer manager
 
@@ -34,6 +36,58 @@ void flush_frame(int fd, tableid_t table_id, frame_idx_t frame_idx) {
     file_write_page(fd, bcb->page_num, (page_t*)bcb->frame);
     bcb->is_dirty = false;
   }
+}
+
+/**
+ * flush all page buffer
+ * for using crash recovery
+ */
+void flush_all_page_buffer() {
+  for (int i = 1; i <= MAX_TABLE_COUNT; i++) {
+    if (table_infos[i].fd != 0) {
+      flush_table_buffer_with_txn(table_infos[i].fd, (tableid_t)i);
+    }
+  }
+  pthread_mutex_lock(&buffer_manager_latch);
+  // Recovery 후 버퍼 완전 초기화
+  for (int i = 0; i <= MAX_TABLE_COUNT; i++) {
+    buf_mgr.page_table[i].clear();
+  }
+
+  // 모든 프레임 초기화
+  for (int i = 0; i < buf_mgr.frames_size; i++) {
+    buf_ctl_block_t* bcb = &buf_mgr.frames[i];
+    bcb->table_id = INVALID_TABLE_ID;
+    bcb->page_num = PAGE_NULL;
+    bcb->is_dirty = false;
+    bcb->pin_count = 0;
+    bcb->ref_bit = false;
+  }
+  pthread_mutex_unlock(&buffer_manager_latch);
+}
+
+void flush_table_buffer_with_txn(int fd, tableid_t table_id) {
+  std::vector<frame_idx_t> targets;
+  pthread_mutex_lock(&buffer_manager_latch);
+  for (auto& pair : buf_mgr.page_table[table_id]) {
+    targets.push_back(pair.second);
+  }
+  pthread_mutex_unlock(&buffer_manager_latch);
+
+  for (frame_idx_t fidx : targets) {
+    flush_frame_with_txn(fd, table_id, fidx);
+  }
+}
+
+void flush_frame_with_txn(int fd, tableid_t table_id, frame_idx_t frame_idx) {
+  buf_ctl_block_t* bcb = &buf_mgr.frames[frame_idx];
+  pthread_mutex_lock(&bcb->page_latch);
+
+  if (bcb->is_dirty) {
+    file_write_page(fd, bcb->page_num, (page_t*)bcb->frame);
+    bcb->is_dirty = false;
+  }
+  pthread_mutex_unlock(&bcb->page_latch);
 }
 
 /**
@@ -381,38 +435,6 @@ void update_clock_hand() {
  */
 frame_idx_t find_free_frame_index(int fd, tableid_t table_id,
                                   pagenum_t page_num) {
-#ifdef TEST_ENV
-  static int find_frame_call_count = 0;
-  find_frame_call_count++;
-
-  if (find_frame_call_count > 50000) {
-    fprintf(stderr,
-            "ERROR: find_free_frame_index called too many times (%d)!\n",
-            find_frame_call_count);
-    fprintf(stderr, "Requested for page_num=%lu, table_id=%d\n", page_num,
-            table_id);
-    fprintf(stderr, "Buffer size: %d\n", buf_mgr.frames_size);
-
-    // 프레임 상태 출력
-    int pinned_count = 0;
-    for (int i = 0; i < buf_mgr.frames_size; i++) {
-      if (buf_mgr.frames[i].pin_count > 0) {
-        pinned_count++;
-        fprintf(stderr,
-                "Frame[%d]: PINNED (pin_count=%d, page_num=%lu, table_id=%d)\n",
-                i, buf_mgr.frames[i].pin_count, buf_mgr.frames[i].page_num,
-                buf_mgr.frames[i].table_id);
-      }
-    }
-    fprintf(stderr, "Total pinned frames: %d / %d\n", pinned_count,
-            buf_mgr.frames_size);
-    exit(EXIT_FAILURE);
-  }
-#endif
-  int iterations = 0;
-  const int MAX_ITERATIONS =
-      buf_mgr.frames_size * 3;  // 일단 최대 3바퀴만 나중에 수정할지도?
-
   while (true) {
     frame_idx_t current_frame_idx = buf_mgr.clock_hand;
     buf_ctl_block_t* bcb = &buf_mgr.frames[buf_mgr.clock_hand];
@@ -421,23 +443,6 @@ frame_idx_t find_free_frame_index(int fd, tableid_t table_id,
       update_clock_hand();
       continue;
     }
-    if (iterations >= MAX_ITERATIONS) {
-      fprintf(stderr,
-              "ERROR: find_free_frame_index - all frames are pinned!\n");
-      fprintf(stderr, "Buffer size: %d, Iterations: %d\n", buf_mgr.frames_size,
-              iterations);
-
-      for (int i = 0; i < buf_mgr.frames_size; i++) {
-        fprintf(
-            stderr,
-            "Frame[%d]: pin_count=%d, ref_bit=%d, table_id=%d, page_num=%lu\n",
-            i, buf_mgr.frames[i].pin_count, buf_mgr.frames[i].ref_bit,
-            buf_mgr.frames[i].table_id, buf_mgr.frames[i].page_num);
-      }
-
-      exit(EXIT_FAILURE);
-    }
-    iterations++;
 
     // Case: if used, skip
     if (bcb->pin_count > 0) {
@@ -450,18 +455,11 @@ frame_idx_t find_free_frame_index(int fd, tableid_t table_id,
       tableid_t old_table_id = bcb->table_id;
       pagenum_t old_page_num = bcb->page_num;
 
-#ifdef TEST_ENV
-      printf("EVICTION: frame_idx=%d, old_table_id=%d, old_page_num=%lu\n",
-             current_frame_idx, old_table_id, old_page_num);
-#endif
-
-      // write dirty page if needed
+      // write dirty page if needed: page eviction
       if (bcb->is_dirty) {
         if (old_table_id >= 1 && old_table_id <= MAX_TABLE_COUNT &&
             table_infos[old_table_id].fd > 0) {
-#ifdef TEST_ENV
-          printf("  -> Writing dirty page to disk\n");
-#endif
+          log_force_flush();
           file_write_page(table_infos[old_table_id].fd, old_page_num,
                           (page_t*)bcb->frame);
         }
@@ -473,17 +471,7 @@ frame_idx_t find_free_frame_index(int fd, tableid_t table_id,
         auto it = page_map.find(old_page_num);
 
         if (it != page_map.end() && it->second == current_frame_idx) {
-#ifdef TEST_ENV
-          printf("  -> Removing page_table[%d][%lu] (frame_idx=%d)\n",
-                 old_table_id, old_page_num, current_frame_idx);
-#endif
           page_map.erase(it);
-        } else if (it != page_map.end()) {
-#ifdef TEST_ENV
-          printf(
-              "  -> WARNING: page_table[%d][%lu] points to frame %d, not %d\n",
-              old_table_id, old_page_num, it->second, current_frame_idx);
-#endif
         }
       }
 
@@ -542,4 +530,13 @@ void unpin_bcb(buf_ctl_block_t* bcb) {
     next_pin_count = 0;
   }
   bcb->pin_count = next_pin_count;
+}
+
+/**
+ * unlock BCB latch and unpin
+ */
+void unlock_and_unpin_bcb(buf_ctl_block_t* bcb) {
+  if (bcb == nullptr) return;
+  pthread_mutex_unlock(&bcb->page_latch);
+  unpin_bcb(bcb);  // do later for preventing page eviction
 }

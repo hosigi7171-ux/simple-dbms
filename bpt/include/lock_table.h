@@ -24,7 +24,7 @@ typedef struct hashkey_t {
 
 typedef struct Hash {
   size_t operator()(const hashkey_t& key) const {
-    std::hash<txnid_t> hasher;
+    std::hash<size_t> hasher;
     size_t tableid = hasher((size_t)key.tableid);
     size_t recordid = hasher((size_t)key.recordid);
     return tableid ^ (recordid << 1);

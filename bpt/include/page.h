@@ -5,9 +5,9 @@
 #include "stdint.h"
 
 #define PAGE_SIZE 4096
-#define HEADER_PAGE_RESERVED 4072
+#define HEADER_PAGE_RESERVED (4064)
 #ifndef NON_HEADER_PAGE_RESERVED
-#define NON_HEADER_PAGE_RESERVED 104
+#define NON_HEADER_PAGE_RESERVED (96)
 #endif
 #ifndef VALUE_SIZE
 #define VALUE_SIZE 120
@@ -23,11 +23,13 @@
 #define INTERNAL 0
 #define PAGE_NULL 0
 #define HEADER_PAGE_POS 0
+#define PAGE_HEADER_RESERVED_SMALL (8)
 
 typedef struct {
   pagenum_t free_page_num;
   pagenum_t root_page_num;
   pagenum_t num_of_pages;
+  uint64_t page_lsn;
   char reserved[HEADER_PAGE_RESERVED];  // not used
 } header_page_t;
 
@@ -55,6 +57,8 @@ typedef struct {
   pagenum_t parent_page_num;
   uint32_t is_leaf;  // 1
   uint32_t num_of_keys;
+  char reserved2[PAGE_HEADER_RESERVED_SMALL];
+  uint64_t page_lsn;
   char reserved[NON_HEADER_PAGE_RESERVED];  // not used
   pagenum_t right_sibling_page_num;         // if rihgtmost, 0
 
@@ -67,6 +71,8 @@ typedef struct {
   pagenum_t parent_page_num;
   int32_t is_leaf;  // 0
   int32_t num_of_keys;
+  char reserved2[PAGE_HEADER_RESERVED_SMALL];
+  uint64_t page_lsn;
   char reserved[NON_HEADER_PAGE_RESERVED];  // not used
   pagenum_t one_more_page_num;  // leftmost page num to know key ranges
 
@@ -78,6 +84,8 @@ typedef struct {
   pagenum_t parent_page_num;
   uint32_t is_leaf;
   uint32_t num_of_keys;
+  char reserved2[PAGE_HEADER_RESERVED_SMALL];
+  uint64_t page_lsn;
   char reserved[NON_HEADER_PAGE_RESERVED];
 } page_header_t;
 

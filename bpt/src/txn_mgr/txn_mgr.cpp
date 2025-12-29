@@ -6,7 +6,9 @@
 #include <stack>
 #include <unordered_set>
 
+#include "buf_mgr.h"
 #include "lock_table.h"
+#include "log.h"
 #include "wait_for_graph.h"
 
 txnid_t next_id = 1;
@@ -78,8 +80,18 @@ int txn_begin(void) {
   tcb->lock_head = nullptr;
   tcb->lock_tail = nullptr;
   tcb->state = TXN_ACTIVE;  // 초기 상태
-
   txn_table.transactions[tcb->id] = tcb;
+
+  uint64_t begin_lsn = log_append_begin(tcb->id);
+  tcb->last_lsn = begin_lsn;
+  if (begin_lsn == 0) {
+    txn_table.transactions.erase(tcb->id);
+    pthread_mutex_unlock(&txn_table.latch);
+    pthread_mutex_destroy(&tcb->latch);
+    pthread_cond_destroy(&tcb->cond);
+    free(tcb);
+    return 0;
+  }
 
   pthread_mutex_unlock(&txn_table.latch);
 
@@ -154,6 +166,8 @@ int txn_commit(txnid_t txn_id) {
     return 0;
   }
   tcb->state = TXN_COMMITTING;
+  uint64_t commit_lsn = log_append_commit(txn_id, tcb->last_lsn);
+  tcb->last_lsn = commit_lsn;
   pthread_mutex_unlock(&tcb->latch);
 
   // txn_table에서 제거
@@ -242,18 +256,50 @@ bool has_granted_x(lock_t* head) {
  * undo all modifications
  */
 void undo_transaction(tcb_t* tcb) {
-  undo_log_t* log = tcb->undo_head;
+  undo_log_t* undo = tcb->undo_head;
 
-  while (log) {
-    // 이전 값으로 복구
-    bpt_update(log->fd, log->table_id, log->key, log->old_value);
+  while (undo != nullptr) {
+    buf_ctl_block_t* bcb =
+        read_buffer_with_txn(undo->fd, undo->table_id, undo->page_num);
 
-    undo_log_t* next = log->prev;
-    free(log);
-    log = next;
+    if (bcb != nullptr) {
+      leaf_page_t* page = (leaf_page_t*)bcb->frame;
+
+      // find record frame
+      int frame_idx = -1;
+      for (int i = 0; i < page->num_of_keys; i++) {
+        if (page->records[i].key == undo->key) {
+          frame_idx = i;
+          break;
+        }
+      }
+
+      if (frame_idx != -1) {
+        // save current (new) value for CLR
+        char new_value[VALUE_SIZE];
+        memcpy(new_value, page->records[frame_idx].value, VALUE_SIZE);
+
+        // write CLR log before applying undo
+        uint64_t clr_lsn = log_append_compensate(
+            tcb->id, undo->table_id, undo->page_num, undo->offset, VALUE_SIZE,
+            new_value,        // old_image: current value
+            undo->old_value,  // new_image: value will be restored
+            undo->prev_update_lsn, tcb->last_lsn);
+
+        if (clr_lsn > 0) {
+          tcb->last_lsn = clr_lsn;
+
+          // apply undo - restore old value
+          memcpy(page->records[frame_idx].value, undo->old_value, VALUE_SIZE);
+
+          page->page_lsn = clr_lsn;
+          bcb->is_dirty = true;
+        }
+      }
+      unlock_and_unpin_bcb(bcb);
+    }
+    undo = undo->prev;
   }
-
-  tcb->undo_head = nullptr;
 }
 
 /**
@@ -294,8 +340,9 @@ void wakeup_waiters_in_records(const std::vector<hashkey_t>& records) {
 /**
  * abort transaction
  * This function is called both by db_api
+ * aborted transaction id if success, otherwise return 0
  */
-void txn_abort(txnid_t victim) {
+int txn_abort(txnid_t victim) {
   pthread_mutex_lock(&lock_table_latch);
   pthread_mutex_lock(&txn_table.latch);
 
@@ -303,7 +350,7 @@ void txn_abort(txnid_t victim) {
   if (it == txn_table.transactions.end()) {
     pthread_mutex_unlock(&txn_table.latch);
     pthread_mutex_unlock(&lock_table_latch);
-    return;
+    return 0;
   }
 
   tcb_t* tcb = it->second;
@@ -314,7 +361,7 @@ void txn_abort(txnid_t victim) {
     pthread_mutex_unlock(&tcb->latch);
     pthread_mutex_unlock(&txn_table.latch);
     pthread_mutex_unlock(&lock_table_latch);
-    return;
+    return 0;
   }
 
   // 상태를 ABORTING으로 변경
@@ -328,16 +375,19 @@ void txn_abort(txnid_t victim) {
   }
 
   pthread_mutex_unlock(&tcb->latch);
-
-  // txn_table에서 제거
-  txn_table.transactions.erase(victim);
   pthread_mutex_unlock(&txn_table.latch);
 
-  // Undo 수행
+  pthread_mutex_unlock(&lock_table_latch);
+
   pthread_mutex_lock(&tcb->latch);
   undo_transaction(tcb);
+
+  // Rollback 로그 남기기
+  uint64_t rollback_lsn = log_append_rollback(victim, tcb->last_lsn);
+  tcb->last_lsn = rollback_lsn;
   pthread_mutex_unlock(&tcb->latch);
 
+  pthread_mutex_lock(&lock_table_latch);
   // 락 수집 및 제거
   std::vector<hashkey_t> touched_records;
   std::vector<lock_t*> locks_to_free;
@@ -389,6 +439,11 @@ void txn_abort(txnid_t victim) {
   }
   pthread_mutex_unlock(&wait_for_graph_latch);
 
+  // txn_table에서 완전히 제거
+  pthread_mutex_lock(&txn_table.latch);
+  txn_table.transactions.erase(victim);
+  pthread_mutex_unlock(&txn_table.latch);
+
   pthread_mutex_lock(&tcb->latch);
   tcb->state = TXN_ABORTED;
   pthread_mutex_unlock(&tcb->latch);
@@ -398,6 +453,7 @@ void txn_abort(txnid_t victim) {
   free(tcb);
 
   // printf("txn_abort: transaction %d aborted\n", victim);
+  return victim;
 }
 
 void unlink_lock_from_txn(tcb_t* txn, lock_t* lock) {

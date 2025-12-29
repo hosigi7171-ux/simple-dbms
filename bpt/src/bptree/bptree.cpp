@@ -3,6 +3,7 @@
 #include "buf_mgr.h"
 #include "file.h"
 #include "lock_table.h"
+#include "log.h"
 #include "txn_mgr.h"
 
 /* Finds and returns success(0) or fail(-1)
@@ -228,7 +229,8 @@ int update_with_txn(int fd, tableid_t table_id, int64_t key, char* new_value,
     }
 
     buf_ctl_block_t* leaf_bcb;
-    if (find_leaf(fd, table_id, key, (void**)&leaf_bcb) == PAGE_NULL) {
+    pagenum_t leaf_page_num = find_leaf(fd, table_id, key, (void**)&leaf_bcb);
+    if (leaf_page_num == PAGE_NULL) {
       return FAILURE;
     }
 
@@ -254,25 +256,55 @@ int update_with_txn(int fd, tableid_t table_id, int64_t key, char* new_value,
     lock_t* lock;
     LockState lock_result =
         lock_acquire(table_id, key, txn_id, tcb, X_LOCK, &lock);
-
     if (lock_result == ACQUIRED) {
-      unpin_bcb(leaf_bcb);
-      pthread_mutex_unlock(&leaf_bcb->page_latch);
+      uint32_t offset = offsetof(leaf_page_t, records) +
+                        idx * sizeof(record_t) + offsetof(record_t, value);
 
-      undo_log_t* log = (undo_log_t*)malloc(sizeof(undo_log_t));
-      log->fd = fd;
-      log->table_id = table_id;
-      log->key = key;
-      memcpy(log->old_value, old_value, VALUE_SIZE);
-      log->prev = tcb->undo_head;
-      tcb->undo_head = log;
+      // write UPDATE log (WAL)
+      pthread_mutex_lock(&tcb->latch);
+      uint64_t prev_lsn = tcb->last_lsn;
+      pthread_mutex_unlock(&tcb->latch);
 
+      uint64_t update_lsn =
+          log_append_update(txn_id, table_id, leaf_page_num, offset, VALUE_SIZE,
+                            old_value, new_value, prev_lsn);
+
+      if (update_lsn == 0) {
+        unlock_and_unpin_bcb(leaf_bcb);
+        return FAILURE;
+      }
+
+      // update TCB's last_lsn
+      pthread_mutex_lock(&tcb->latch);
+      tcb->last_lsn = update_lsn;
+
+      // save undo log in memory (for fast abort)
+      undo_log_t* undo = (undo_log_t*)malloc(sizeof(undo_log_t));
+      if (undo != nullptr) {
+        undo->fd = fd;
+        undo->table_id = table_id;
+        undo->key = key;
+        undo->page_num = leaf_page_num;
+        undo->offset = offset;
+        undo->prev_update_lsn = prev_lsn;
+        memcpy(undo->old_value, old_value, VALUE_SIZE);
+
+        undo->prev = tcb->undo_head;
+        tcb->undo_head = undo;
+      }
+      pthread_mutex_unlock(&tcb->latch);
+
+      // apply update to page
+      memcpy(leaf->records[idx].value, new_value, VALUE_SIZE);
+      leaf->page_lsn = update_lsn;
+      leaf_bcb->is_dirty = true;
+
+      unlock_and_unpin_bcb(leaf_bcb);
       return SUCCESS;
     }
 
     if (lock_result == NEED_TO_WAIT) {
-      unpin_bcb(leaf_bcb);
-      pthread_mutex_unlock(&leaf_bcb->page_latch);
+      unlock_and_unpin_bcb(leaf_bcb);
 
       bool wait_success = lock_wait(lock);
       if (!wait_success) {  // deadlock or abort
@@ -284,14 +316,11 @@ int update_with_txn(int fd, tableid_t table_id, int64_t key, char* new_value,
     }
 
     if (lock_result == DEADLOCK) {
-      unpin_bcb(leaf_bcb);
-      pthread_mutex_unlock(&leaf_bcb->page_latch);
+      unlock_and_unpin_bcb(leaf_bcb);
 
       return FAILURE;
     }
-
-    unpin_bcb(leaf_bcb);
-    pthread_mutex_unlock(&leaf_bcb->page_latch);
+    unlock_and_unpin_bcb(leaf_bcb);
     return FAILURE;
   }
 }

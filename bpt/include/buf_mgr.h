@@ -42,8 +42,10 @@ extern pthread_mutex_t buffer_manager_latch;
 
 // flush buffer
 void flush_table_buffer(int fd, tableid_t table_id);
-void flush_all_buffers(void);
 void flush_frame(int fd, tableid_t table_id, frame_idx_t frame_idx);
+void flush_table_buffer_with_txn(int fd, tableid_t table_id);
+void flush_frame_with_txn(int fd, tableid_t table_id, frame_idx_t frame_idx);
+void flush_all_page_buffer();
 
 // read/write buffer
 header_page_t* read_header_page(int fd, tableid_t table_id);
@@ -80,6 +82,7 @@ void pin_frame(frame_idx_t frame_idx);
 void unpin(tableid_t table_id, pagenum_t page_num);
 void unpin_bcb(buf_ctl_block_t* bcb);
 void mark_dirty(tableid_t table_id, pagenum_t page_num);
+void unlock_and_unpin_bcb(buf_ctl_block_t* bcb);
 
 // clock algorithm
 void update_clock_hand(void);
